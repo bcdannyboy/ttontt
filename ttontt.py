@@ -16,10 +16,18 @@ if __name__ == "__main__":
 
     # Example usage:
     stock_data = obb.equity.price.historical(symbol='TSLA', start_date='2023-01-01', provider='yfinance')
-    combined_volatility = get_combined_historical_volatility(stock_data.results)
+    combined_volatility, best_tf = get_combined_historical_volatility(stock_data.results)
     
-    # Print the combined volatility dictionary
+    # Print the combined volatility dictionary by window size.
     for window, values in combined_volatility.items():
         print(f"Window: {window}")
-        for key, arr in values.items():
-            print(f"  {key}: {arr}")
+        for key, value in values.items():
+            print(f"  {key}: {value}")
+    
+    # Print the best timeframe indicator.
+    print("\nBest timeframe indicator for trades:")
+    print(f"Window: {best_tf['window']}")
+    print(f"Score: {best_tf['score']}")
+    print("Details:")
+    for key, value in best_tf["details"].items():
+        print(f"  {key}: {value}")
