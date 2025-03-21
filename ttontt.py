@@ -16,6 +16,8 @@ from rich.table import Table
 from rich.columns import Columns
 from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 
+from tickers import tickers
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -118,16 +120,11 @@ def perform_stock_screening(tickers, batch_size=10):
                 
         # Remove any extremely large outliers that might be due to calculation errors
         if all_results:
-            # Find median score
             scores = [score for _, score, _ in all_results]
             median_score = np.median(scores)
-            
-            # Filter out entries with absurdly high scores (e.g., >1000x median)
             threshold = abs(median_score) * 1000 if median_score != 0 else 1000
             filtered_results = [(ticker, score, details) for ticker, score, details in all_results 
                               if abs(score) < threshold]
-            
-            # Log if we removed any outliers
             if len(filtered_results) < len(all_results):
                 logger.info(f"Removed {len(all_results) - len(filtered_results)} outlier scores")
                 all_results = filtered_results
@@ -150,16 +147,10 @@ def save_results_to_json(json_data, output_dir="output"):
         str: Filename if successful, None if error occurs
     """
     try:
-        # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
-        
-        # Generate filename with timestamp
         output_filename = f"{output_dir}/fundamental_screening_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        
-        # Save JSON file
         with open(output_filename, 'w') as json_file:
             json.dump(json_data, json_file, indent=4)
-        
         return output_filename
     except Exception as e:
         logger.error(f"Error saving results to JSON: {e}")
@@ -168,7 +159,6 @@ def save_results_to_json(json_data, output_dir="output"):
 
 if __name__ == "__main__":
     try:
-        # Display ASCII art header
         ascii_art = r"""
   _____     _____     ___      _   _    _____     _____ 
  |_   _|   |_   _|   / _ \    | \ | |  |_   _|   |_   _|
@@ -179,31 +169,19 @@ if __name__ == "__main__":
  To Trade                  or               Not to Trade 
 """
         print(ascii_art)
-        
-        # Define tickers to screen
-        tickers = ['BX', 'KKR', 'APO', 'CG', 'TPG', 'ARES', 'EQT', 'PGHN.SW', 'BAM', 'ARCC', 
-                  'OBDC', 'BXSL', 'FSK', 'MAIN', 'GBDC', 'HTGC', 'TSLX', 'PSEC', 'GSBD', 'OCSL', 
-                  'MFIC', 'NMFC', 'KBDC', 'CSWC', 'BBDC', 'TRIN', 'PFLT', 'SLR', 'CGBDC', 'MSIF', 
-                  'FDUS', 'CCAP', 'TCPC', 'GLAD', 'CION', 'GAIN', 'PNNT', 'RWAY', 'SCM', 'HRZN', 
-                  'SARS', 'TPVG', 'WHF', 'OXSQ', 'MRCC', 'PTMN', 'SSSS', 'OFS', 'GECC', 'PFX', 
-                  'LRFC', 'RAND', 'ICMB', 'EQS']
                   
-        # Screen stocks with batching and error handling
         results = perform_stock_screening(tickers, batch_size=5)
         
         if not results:
             logger.error("No valid stocks were successfully screened. Check logs for details.")
             sys.exit(1)
             
-        # Ensure the results are sorted by composite score (descending)
         results.sort(key=lambda x: x[1], reverse=True)
         
-        # Process results and generate reports
         rich_console = Console()
         rich_console.print("\n[bold]Fundamental Screening Results:[/bold]")
         rich_console.print("-----------------------------")
         
-        # Format results as a table (ordered by composite score descending)
         table = Table(title="Stock Scores")
         table.add_column("Ticker", style="cyan")
         table.add_column("Score", justify="right", style="green")
@@ -213,14 +191,12 @@ if __name__ == "__main__":
             
         rich_console.print(table)
         
-        # Prepare data for JSON export
         json_data = {
             "screening_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "tickers_analyzed": tickers,
             "stocks": []
         }
         
-        # Generate reports with ThreadPoolExecutor for improved performance
         rich_console.print("\n[bold]Generating detailed reports...[/bold]")
         stock_reports = []
         
@@ -234,15 +210,12 @@ if __name__ == "__main__":
         ) as progress:
             task = progress.add_task("Generating reports...", total=len(results))
             
-            # Use ThreadPoolExecutor for parallel processing
             with ThreadPoolExecutor(max_workers=min(10, len(results))) as executor:
-                # Map the function over all results
                 future_to_ticker = {
                     executor.submit(generate_stock_report_task, ticker, score, details): ticker 
                     for ticker, score, details in results
                 }
                 
-                # Process completed futures
                 for future in tqdm(future_to_ticker, total=len(future_to_ticker), 
                                   desc="Generating reports", leave=False):
                     try:
@@ -252,38 +225,30 @@ if __name__ == "__main__":
                         ticker = future_to_ticker[future]
                         logger.error(f"Error generating report for {ticker}: {e}")
                     
-                    # Update progress
                     progress.update(task, advance=1)
         
-        # Add to JSON data
         for stock_data in stock_reports:
             json_data["stocks"].append(stock_data)
             
-        # Save results to JSON file
         output_filename = save_results_to_json(json_data)
         if output_filename:
             rich_console.print(f"\n[bold green]Results saved to {output_filename}[/bold green]")
         else:
             rich_console.print("\n[bold red]Error saving results to file. Check logs for details.[/bold red]")
             
-        # Calculate quartiles for display
         try:
             scores = [score for _, score, _ in results]
             q1 = np.percentile(scores, 25)
             q3 = np.percentile(scores, 75)
             
-            # Identify top and bottom quartile stocks and sort them by composite score
             top_quartile = [(ticker, score, details) for ticker, score, details in results if score >= q3]
             bottom_quartile = [(ticker, score, details) for ticker, score, details in results if score <= q1]
             top_quartile.sort(key=lambda x: x[1], reverse=True)
             bottom_quartile.sort(key=lambda x: x[1])
             
-            # Display quartile analysis
             rich_console.print("\n[bold]Quartile Analysis:[/bold]")
             
-            # Build tables and display them
             if top_quartile:
-                # Get category names
                 categories = list(top_quartile[0][2]['category_scores'].keys())
                 table_top = Table(title="Top Quartile Stocks")
                 table_top.add_column("Ticker", style="cyan")
@@ -298,7 +263,6 @@ if __name__ == "__main__":
                     table_top.add_row(*row)
                 
                 if bottom_quartile:
-                    # Get category names
                     categories = list(bottom_quartile[0][2]['category_scores'].keys())
                     table_bottom = Table(title="Bottom Quartile Stocks")
                     table_bottom.add_column("Ticker", style="cyan")
@@ -312,12 +276,10 @@ if __name__ == "__main__":
                             row.append(f"{cat_score:.2f}")
                         table_bottom.add_row(*row)
                     
-                    # Display tables side by side
                     rich_console.print(Columns([table_top, table_bottom]))
                 else:
                     rich_console.print(table_top)
             elif bottom_quartile:
-                # Only bottom quartile exists
                 categories = list(bottom_quartile[0][2]['category_scores'].keys())
                 table_bottom = Table(title="Bottom Quartile Stocks")
                 table_bottom.add_column("Ticker", style="cyan")
