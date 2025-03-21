@@ -55,7 +55,7 @@ import os
 from openbb import obb
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any, Tuple, Optional, Union
+from typing import List, Dict, Any, Tuple, Optional, Union, Set
 import logging
 from datetime import datetime, timedelta
 import concurrent.futures
@@ -697,24 +697,23 @@ def normalize_data(data_dict: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str
 
 def calculate_z_scores(data_dict: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str, float]]:
     """
-    Calculate z-scores with optimized performance using PyTorch to leverage MPS.
+    Calculate z-scores for each metric using PyTorch and clamp extreme values to [-3, 3].
+    This prevents a few outlier raw values from skewing the composite score.
     """
     z_scores = {ticker: {} for ticker in data_dict}
     metrics_dict = {}
     for ticker, metrics in data_dict.items():
         for metric, value in metrics.items():
             if isinstance(value, (int, float)) and not pd.isna(value) and value is not None:
-                if metric not in metrics_dict:
-                    metrics_dict[metric] = []
-                metrics_dict[metric].append((ticker, value))
+                metrics_dict.setdefault(metric, []).append((ticker, value))
     for metric, ticker_values in metrics_dict.items():
         if len(ticker_values) < 2:
             continue
         tickers, values = zip(*ticker_values)
-        # Use PyTorch tensor on our device (MPS if available)
+        # Use PyTorch tensor on the appropriate device (MPS if available)
         values_tensor = torch.tensor(values, dtype=torch.float32, device=device)
+        # If enough values and variability exists, try robust standardization for high skewness.
         if len(values) > 4 and torch.std(values_tensor) > 0:
-            # Calculate skewness
             std_val = torch.std(values_tensor)
             skewness = torch.abs(torch.mean(((values_tensor - torch.mean(values_tensor)) / std_val) ** 3)).item()
             if skewness > 2:
@@ -722,16 +721,21 @@ def calculate_z_scores(data_dict: Dict[str, Dict[str, float]]) -> Dict[str, Dict
                 iqr = torch.quantile(values_tensor, 0.75) - torch.quantile(values_tensor, 0.25)
                 robust_std = max((iqr / 1.349).item(), 1e-10)
                 metric_z_scores = (values_tensor - median_val) / robust_std
+                # Clamp extreme values to avoid huge deviations
+                metric_z_scores = torch.clamp(metric_z_scores, -3, 3)
                 for ticker, z_score in zip(tickers, metric_z_scores):
                     z_scores[ticker][metric] = z_score.item()
                 continue
+        # Otherwise, use standard z-score normalization.
         mean_val = torch.mean(values_tensor)
         std_val = torch.std(values_tensor)
         std_val = std_val if std_val > 1e-10 else torch.tensor(1e-10, device=device)
         metric_z_scores = (values_tensor - mean_val) / std_val
+        metric_z_scores = torch.clamp(metric_z_scores, -3, 3)
         for ticker, z_score in zip(tickers, metric_z_scores):
             z_scores[ticker][metric] = z_score.item()
     return z_scores
+
 
 def calculate_weighted_score(z_scores: Dict[str, float], weights: Dict[str, float]) -> float:
     """
@@ -916,26 +920,6 @@ def screen_stocks(tickers: List[str], max_workers: int = None) -> List[Tuple[str
     results.sort(key=lambda x: x[1], reverse=True)
     logger.info(f"Successfully screened {len(results)} stocks.")
     return results
-
-def get_top_stocks(tickers: List[str], top_n: int = 10, max_workers: int = None) -> pd.DataFrame:
-    """
-    Get the top N stocks based on their fundamental scores.
-    """
-    results = screen_stocks(tickers, max_workers=max_workers)
-    data = []
-    for ticker, composite_score, detailed_results in results[:min(top_n, len(results))]:
-        category_scores = detailed_results['category_scores']
-        data.append({
-            'Ticker': ticker,
-            'Composite Score': round(composite_score, 2),
-            'Profitability': round(category_scores['profitability'], 2),
-            'Growth': round(category_scores['growth'], 2),
-            'Financial Health': round(category_scores['financial_health'], 2),
-            'Valuation': round(category_scores['valuation'], 2),
-            'Efficiency': round(category_scores['efficiency'], 2),
-            'Analyst Estimates': round(category_scores['analyst_estimates'], 2)
-        })
-    return pd.DataFrame(data)
 
 def get_metric_contributions(ticker: str) -> pd.DataFrame:
     """
@@ -1297,3 +1281,106 @@ def generate_stock_report(ticker: str) -> Dict[str, Any]:
             elif metrics.get(metric) < 0:
                 report['weaknesses'].append(f"{metric}: {metrics.get(metric):.2f}")
     return report
+
+async def get_peers_async(ticker: str) -> List[str]:
+    """
+    Asynchronously fetch peers for a given ticker using OpenBB API.
+    Returns a list of peer ticker symbols.
+    """
+    obb_client = get_openbb_client()
+    try:
+        response = await rate_limited_api_call(obb_client.equity.compare.peers, symbol=ticker, provider='fmp')
+        if response and hasattr(response, 'results'):
+            result = response.results
+            # Check if result is a list or an object with peers_list
+            if isinstance(result, list) and len(result) > 0:
+                if hasattr(result[0], 'peers_list'):
+                    return result[0].peers_list
+                elif isinstance(result[0], dict) and 'peers_list' in result[0]:
+                    return result[0]['peers_list']
+                else:
+                    return []
+            elif hasattr(result, 'peers_list'):
+                return result.peers_list
+            else:
+                return []
+        else:
+            return []
+    except Exception as e:
+        logger.error(f"Error fetching peers for {ticker}: {e}")
+        return []
+
+async def recursive_peers_analysis(ticker: str, depth: int = 1, visited: Optional[Set[str]] = None) -> Dict[str, Any]:
+    """
+    Recursively analyze a ticker and its peers up to a specified depth.
+    Returns a dictionary containing the ticker, its composite score, detailed fundamentals,
+    peer comparison statistics, and recursive analysis of its peers.
+    """
+    if visited is None:
+        visited = set()
+    if ticker in visited:
+        return {}
+    visited.add(ticker)
+    
+    # Get fundamental screening for the ticker using screen_stocks_async
+    base_results = await screen_stocks_async([ticker])
+    if base_results:
+        base_composite = base_results[0][1]
+        base_details = base_results[0][2]
+    else:
+        base_composite = 0.0
+        base_details = {}
+    
+    # Fetch peers for the ticker
+    peers_list = await get_peers_async(ticker)
+    peers_analysis = []
+    group_map = {}
+    if peers_list:
+        # Filter out already visited tickers
+        group_tickers = [peer for peer in peers_list if peer not in visited]
+        if group_tickers:
+            group_results = await screen_stocks_async(group_tickers)
+            group_map = {res[0]: (res[1], res[2]) for res in group_results}
+        # Recursively analyze each peer
+        for peer in peers_list:
+            if peer in visited:
+                continue
+            peer_data = await recursive_peers_analysis(peer, depth - 1, visited) if depth > 1 else {}
+            # Merge screening results if available
+            if peer in group_map:
+                peer_composite, peer_details = group_map[peer]
+            else:
+                peer_composite, peer_details = (0.0, {})
+            if not peer_data:
+                peer_data = {
+                    'ticker': peer,
+                    'composite_score': peer_composite,
+                    'fundamentals': peer_details,
+                    'peers': []
+                }
+            peers_analysis.append(peer_data)
+    
+    # Compute peer comparison statistics for direct peers
+    if group_map:
+        scores = [score for score, _ in group_map.values()]
+        average_score = np.mean(scores) if scores else base_composite
+        std_dev = np.std(scores) if scores else 0.0
+        peer_comparison = {
+            'average_score': average_score,
+            'std_dev': std_dev,
+            'count': len(group_map)
+        }
+    else:
+        peer_comparison = {
+            'average_score': base_composite,
+            'std_dev': 0.0,
+            'count': 0
+        }
+    
+    return {
+        'ticker': ticker,
+        'composite_score': base_composite,
+        'fundamentals': base_details,
+        'peers': peers_analysis,
+        'peer_comparison': peer_comparison
+    }
