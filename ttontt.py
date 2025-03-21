@@ -187,7 +187,7 @@ if __name__ == "__main__":
         table.add_column("Score", justify="right", style="green")
         
         for ticker, score, _ in results:
-            table.add_row(ticker, f"{score:.2f}")
+            table.add_row(ticker, f"{score:.8f}")
             
         rich_console.print(table)
         
@@ -256,10 +256,10 @@ if __name__ == "__main__":
                 for cat in categories:
                     table_top.add_column(cat.title(), justify="right")
                 for ticker, score, details in top_quartile:
-                    row = [ticker, f"{score:.2f}"]
+                    row = [ticker, f"{score:.8f}"]
                     for cat in categories:
                         cat_score = details['category_scores'].get(cat, 0)
-                        row.append(f"{cat_score:.2f}")
+                        row.append(f"{cat_score:.8f}")
                     table_top.add_row(*row)
                 
                 if bottom_quartile:
@@ -270,10 +270,10 @@ if __name__ == "__main__":
                     for cat in categories:
                         table_bottom.add_column(cat.title(), justify="right")
                     for ticker, score, details in bottom_quartile:
-                        row = [ticker, f"{score:.2f}"]
+                        row = [ticker, f"{score:.8f}"]
                         for cat in categories:
                             cat_score = details['category_scores'].get(cat, 0)
-                            row.append(f"{cat_score:.2f}")
+                            row.append(f"{cat_score:.8f}")
                         table_bottom.add_row(*row)
                     
                     rich_console.print(Columns([table_top, table_bottom]))
@@ -287,10 +287,10 @@ if __name__ == "__main__":
                 for cat in categories:
                     table_bottom.add_column(cat.title(), justify="right")
                 for ticker, score, details in bottom_quartile:
-                    row = [ticker, f"{score:.2f}"]
+                    row = [ticker, f"{score:.8f}"]
                     for cat in categories:
                         cat_score = details['category_scores'].get(cat, 0)
-                        row.append(f"{cat_score:.2f}")
+                        row.append(f"{cat_score:.8f}")
                     table_bottom.add_row(*row)
                 
                 rich_console.print(table_bottom)
