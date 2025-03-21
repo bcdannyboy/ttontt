@@ -17,7 +17,9 @@ from rich.table import Table
 from rich.columns import Columns
 from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 
-from tickers import tickers
+from tickers import get_active_tickers
+import tickers
+
 
 # Configure logging
 logging.basicConfig(
@@ -218,8 +220,12 @@ if __name__ == "__main__":
  To Trade                  or               Not to Trade 
 """
         print(ascii_art)
+
+        # init_tickers = tickers.tickers
+        init_tickers = get_active_tickers()
+        print(f"analyzing {len(init_tickers)} tickers...")
                   
-        results = perform_stock_screening(tickers, batch_size=5)
+        results = perform_stock_screening(init_tickers, batch_size=os.cpu_count())
         
         if not results:
             logger.error("No valid stocks were successfully screened. Check logs for details.")
@@ -242,7 +248,7 @@ if __name__ == "__main__":
         
         json_data = {
             "screening_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "tickers_analyzed": tickers,
+            "tickers_analyzed": init_tickers,
             "stocks": []
         }
         
