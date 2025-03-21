@@ -33,7 +33,7 @@ Overall Approach:
 
 Statistical Methods:
 -------------------
-- Z-score calculation to standardize metrics across companies
+- Z-score calculation to standardize metrics across companies (implemented via PyTorch to leverage MPS)
 - Spearman rank correlation to evaluate estimate accuracy
 - Weighted averaging to combine multiple factors
 - Statistical detection of outliers using quartile-based methods
@@ -68,9 +68,20 @@ import aiohttp
 import functools
 from scipy.stats import spearmanr
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Import PyTorch to leverage MPS on Apple Silicon
+import torch
+
+# Set device to mps if available; otherwise use cpu
+if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = torch.device("mps")
+    logger_device = "MPS"
+else:
+    device = torch.device("cpu")
+    logger_device = "CPU"
+
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger.info(f"Using device: {logger_device}")
 
 # Thread-local storage for OpenBB API session
 thread_local = threading.local()
@@ -196,13 +207,16 @@ async def rate_limited_api_call(func, *args, **kwargs):
 
 def select_valid_record(records: List[Any], key: str, min_value: float = 0.001) -> Any:
     """
-    Returns the first record in the list that has a value for `key`
-    above min_value. If none found, returns the first record.
+    Returns the first record with a nonzero value for `key` above min_value.
+    If none is found, returns the first record.
     """
     for rec in records:
         value = getattr(rec, key, None)
-        if value is not None and not pd.isna(value) and float(value) > min_value:
-            return rec
+        try:
+            if value is not None and not pd.isna(value) and float(value) > min_value:
+                return rec
+        except Exception:
+            continue
     return records[0] if records else None
 
 async def get_financial_data_async(ticker: str) -> Tuple[str, Dict[str, List]]:
@@ -212,7 +226,6 @@ async def get_financial_data_async(ticker: str) -> Tuple[str, Dict[str, List]]:
     """
     obb_client = get_openbb_client()
     financial_data = {}
-
     try:
         income_task = rate_limited_api_call(
             obb_client.equity.fundamental.income,
@@ -226,20 +239,16 @@ async def get_financial_data_async(ticker: str) -> Tuple[str, Dict[str, List]]:
             obb_client.equity.fundamental.cash,
             symbol=ticker, period='annual', limit=5, provider='fmp'
         )
-        
         income_response, balance_response, cash_response = await asyncio.gather(
             income_task, balance_task, cash_task, 
             return_exceptions=True
         )
-        
         if isinstance(income_response, Exception) or isinstance(balance_response, Exception):
             logger.error(f"Essential data fetch failed for {ticker}")
             return (ticker, financial_data)
-            
         financial_data['income'] = income_response.results if not isinstance(income_response, Exception) else []
         financial_data['balance'] = balance_response.results if not isinstance(balance_response, Exception) else []
         financial_data['cash'] = cash_response.results if not isinstance(cash_response, Exception) else []
-        
         if financial_data['income'] and financial_data['balance']:
             income_growth_task = rate_limited_api_call(
                 obb_client.equity.fundamental.income_growth,
@@ -261,18 +270,15 @@ async def get_financial_data_async(ticker: str) -> Tuple[str, Dict[str, List]]:
                 obb_client.equity.fundamental.metrics,
                 symbol=ticker, period='annual', limit=5, provider='fmp'
             )
-            
             historical_estimates_task = rate_limited_api_call(
                 obb_client.equity.estimates.historical,
                 symbol=ticker, provider='fmp'
             )
-            
             results = await asyncio.gather(
                 income_growth_task, balance_growth_task, cash_growth_task, 
                 ratios_task, metrics_task, historical_estimates_task,
                 return_exceptions=True
             )
-            
             financial_data['income_growth'] = results[0].results if not isinstance(results[0], Exception) else []
             financial_data['balance_growth'] = results[1].results if not isinstance(results[1], Exception) else []
             financial_data['cash_growth'] = results[2].results if not isinstance(results[2], Exception) else []
@@ -280,7 +286,7 @@ async def get_financial_data_async(ticker: str) -> Tuple[str, Dict[str, List]]:
             financial_data['metrics'] = results[4].results if not isinstance(results[4], Exception) else []
             financial_data['historical_estimates'] = results[5].results if not isinstance(results[5], Exception) else []
             
-            # Fallback chain for forward sales: fmp > intrinio > default (no provider)
+            # Forward sales fallback chain: fmp > intrinio > default
             try:
                 forward_sales_response = await rate_limited_api_call(
                     obb_client.equity.estimates.forward_sales,
@@ -307,7 +313,7 @@ async def get_financial_data_async(ticker: str) -> Tuple[str, Dict[str, List]]:
                         logger.warning(f"Error fetching forward sales for {ticker} with default provider: \n{e3}")
                         financial_data['forward_sales'] = []
             
-            # Fallback chain for forward EBITDA: fmp > intrinio > default (no provider)
+            # Forward EBITDA fallback chain: fmp > intrinio > default
             try:
                 forward_ebitda_response = await rate_limited_api_call(
                     obb_client.equity.estimates.forward_ebitda,
@@ -357,10 +363,8 @@ async def get_financial_data_async(ticker: str) -> Tuple[str, Dict[str, List]]:
             except Exception as e:
                 logger.warning(f"Earnings endpoint not available for {ticker}, constructing from income data")
                 financial_data['earnings'] = construct_earnings_from_income(financial_data['income'])
-                
     except Exception as e:
         logger.error(f"Error fetching data for {ticker}: {e}")
-    
     return (ticker, financial_data)
 
 def get_attribute_value(obj: Any, attr_name: str, default=0) -> Any:
@@ -518,7 +522,6 @@ def extract_metrics_from_financial_data(financial_data):
     """
     metrics = {}
     if isinstance(financial_data, dict) and financial_data.get('income') and len(financial_data['income']) > 0:
-        # Use a valid income record if available
         income = select_valid_record(financial_data['income'], 'revenue') or financial_data['income'][0]
         metrics['gross_profit_margin'] = get_attribute_value(income, 'gross_profit_margin')
         metrics['operating_income_margin'] = get_attribute_value(income, 'operating_income_margin')
@@ -621,6 +624,7 @@ def extract_metrics_from_financial_data(financial_data):
         else:
             metrics['dividend_yield'] = 0
     
+    # Initialize estimates-related metrics
     metrics['estimate_eps_accuracy'] = 0
     metrics['estimate_revenue_accuracy'] = 0
     metrics['estimate_ebitda_accuracy'] = 0
@@ -693,7 +697,7 @@ def normalize_data(data_dict: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str
 
 def calculate_z_scores(data_dict: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str, float]]:
     """
-    Calculate z-scores with optimized performance using NumPy.
+    Calculate z-scores with optimized performance using PyTorch to leverage MPS.
     """
     z_scores = {ticker: {} for ticker in data_dict}
     metrics_dict = {}
@@ -707,22 +711,26 @@ def calculate_z_scores(data_dict: Dict[str, Dict[str, float]]) -> Dict[str, Dict
         if len(ticker_values) < 2:
             continue
         tickers, values = zip(*ticker_values)
-        values_array = np.array(values)
-        if len(values) > 4 and np.std(values_array) > 0:
-            skewness = np.abs(np.mean(((values_array - np.mean(values_array)) / np.std(values_array))**3))
+        # Use PyTorch tensor on our device (MPS if available)
+        values_tensor = torch.tensor(values, dtype=torch.float32, device=device)
+        if len(values) > 4 and torch.std(values_tensor) > 0:
+            # Calculate skewness
+            std_val = torch.std(values_tensor)
+            skewness = torch.abs(torch.mean(((values_tensor - torch.mean(values_tensor)) / std_val) ** 3)).item()
             if skewness > 2:
-                median = np.median(values_array)
-                iqr = np.percentile(values_array, 75) - np.percentile(values_array, 25)
-                robust_std = max(iqr / 1.349, 1e-10)
-                metric_z_scores = (values_array - median) / robust_std
+                median_val = torch.median(values_tensor)
+                iqr = torch.quantile(values_tensor, 0.75) - torch.quantile(values_tensor, 0.25)
+                robust_std = max((iqr / 1.349).item(), 1e-10)
+                metric_z_scores = (values_tensor - median_val) / robust_std
                 for ticker, z_score in zip(tickers, metric_z_scores):
-                    z_scores[ticker][metric] = z_score
+                    z_scores[ticker][metric] = z_score.item()
                 continue
-        mean = np.mean(values_array)
-        std = max(np.std(values_array), 1e-10)
-        metric_z_scores = (values_array - mean) / std
+        mean_val = torch.mean(values_tensor)
+        std_val = torch.std(values_tensor)
+        std_val = std_val if std_val > 1e-10 else torch.tensor(1e-10, device=device)
+        metric_z_scores = (values_tensor - mean_val) / std_val
         for ticker, z_score in zip(tickers, metric_z_scores):
-            z_scores[ticker][metric] = z_score
+            z_scores[ticker][metric] = z_score.item()
     return z_scores
 
 def calculate_weighted_score(z_scores: Dict[str, float], weights: Dict[str, float]) -> float:
@@ -1071,7 +1079,7 @@ def get_estimate_accuracy_report(ticker: str) -> pd.DataFrame:
             'Type': metric_type
         })
     return pd.DataFrame(data)
-
+    
 def generate_stock_report(ticker: str) -> Dict[str, Any]:
     """
     Generate a comprehensive fundamental analysis report for a stock.
