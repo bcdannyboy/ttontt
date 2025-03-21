@@ -290,11 +290,11 @@ async def get_financial_data_async(ticker: str) -> Tuple[str, Dict[str, List]]:
             try:
                 forward_sales_response = await rate_limited_api_call(
                     obb_client.equity.estimates.forward_sales,
-                    symbol=ticker, provider='fmp'
+                    symbol=ticker
                 )
                 financial_data['forward_sales'] = forward_sales_response.results
             except Exception as e:
-                logger.warning(f"Error fetching forward sales for {ticker} from FMP: \n{e}")
+                logger.warning(f"Error fetching forward sales for {ticker} from standard: \n{e}")
                 try:
                     forward_sales_response = await rate_limited_api_call(
                         obb_client.equity.estimates.forward_sales,
@@ -994,7 +994,7 @@ def get_estimate_accuracy_report(ticker: str) -> pd.DataFrame:
         financial_data['earnings'] = earnings_response.results
         try:
             forward_sales_response = obb_client.equity.estimates.forward_sales(
-                symbol=ticker, provider='fmp'
+                symbol=ticker
             )
         except Exception as e:
             logger.warning(f"Error fetching forward sales for {ticker} in estimate report from FMP: {e}")
@@ -1124,11 +1124,11 @@ def generate_stock_report(ticker: str) -> Dict[str, Any]:
             financial_data['dividends'] = []
         try:
             forward_sales_response = obb_client.equity.estimates.forward_sales(
-                symbol=ticker, provider='fmp'
+                symbol=ticker
             )
             financial_data['forward_sales'] = forward_sales_response.results
         except Exception as e:
-            logger.warning(f"Error fetching forward sales for {ticker} from FMP: {e}")
+            logger.warning(f"Error fetching forward sales for {ticker} from Standard: {e}")
             try:
                 forward_sales_response = obb_client.equity.estimates.forward_sales(
                     symbol=ticker, provider='intrinio'
