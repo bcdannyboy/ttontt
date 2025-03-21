@@ -1289,7 +1289,11 @@ async def get_peers_async(ticker: str) -> List[str]:
     """
     obb_client = get_openbb_client()
     try:
-        response = await rate_limited_api_call(obb_client.equity.compare.peers, symbol=ticker, provider='fmp')
+        response = await rate_limited_api_call(
+            obb_client.equity.compare.peers, 
+            symbol=ticker, 
+            provider='fmp'
+        )
         if response and hasattr(response, 'results'):
             result = response.results
             # Check if result is a list or an object with peers_list
@@ -1310,77 +1314,110 @@ async def get_peers_async(ticker: str) -> List[str]:
         logger.error(f"Error fetching peers for {ticker}: {e}")
         return []
 
-async def recursive_peers_analysis(ticker: str, depth: int = 1, visited: Optional[Set[str]] = None) -> Dict[str, Any]:
+async def analyze_ticker_with_peers(ticker: str, depth: int = 1, visited: Optional[Set[str]] = None) -> Dict[str, Any]:
     """
-    Recursively analyze a ticker and its peers up to a specified depth.
-    Returns a dictionary containing the ticker, its composite score, detailed fundamentals,
-    peer comparison statistics, and recursive analysis of its peers.
+    Analyze a ticker and its peers without recursion to avoid asyncio event loop issues.
+    Returns peer comparison data for the ticker.
     """
     if visited is None:
         visited = set()
+    
+    # Skip if already visited
     if ticker in visited:
-        return {}
+        return {'ticker': ticker, 'peer_comparison': {}, 'peers': []}
+    
     visited.add(ticker)
     
-    # Get fundamental screening for the ticker using screen_stocks_async
-    base_results = await screen_stocks_async([ticker])
-    if base_results:
-        base_composite = base_results[0][1]
-        base_details = base_results[0][2]
-    else:
-        base_composite = 0.0
-        base_details = {}
+    # Get the ticker's composite score using the local function (no module prefix)
+    ticker_results = await screen_stocks_async([ticker])
+    if not ticker_results:
+        return {'ticker': ticker, 'peer_comparison': {}, 'peers': []}
     
-    # Fetch peers for the ticker
+    ticker_score = ticker_results[0][1]
+    
+    # Fetch peers using get_peers_async (already defined in this module)
     peers_list = await get_peers_async(ticker)
-    peers_analysis = []
-    group_map = {}
-    if peers_list:
-        # Filter out already visited tickers
-        group_tickers = [peer for peer in peers_list if peer not in visited]
-        if group_tickers:
-            group_results = await screen_stocks_async(group_tickers)
-            group_map = {res[0]: (res[1], res[2]) for res in group_results}
-        # Recursively analyze each peer
-        for peer in peers_list:
-            if peer in visited:
-                continue
-            peer_data = await recursive_peers_analysis(peer, depth - 1, visited) if depth > 1 else {}
-            # Merge screening results if available
-            if peer in group_map:
-                peer_composite, peer_details = group_map[peer]
-            else:
-                peer_composite, peer_details = (0.0, {})
-            if not peer_data:
-                peer_data = {
-                    'ticker': peer,
-                    'composite_score': peer_composite,
-                    'fundamentals': peer_details,
-                    'peers': []
-                }
-            peers_analysis.append(peer_data)
+    if not peers_list:
+        # If no peers, return self as the peer average
+        return {
+            'ticker': ticker,
+            'peer_comparison': {
+                'average_score': ticker_score,
+                'std_dev': 0.0,
+                'count': 0
+            },
+            'peers': []
+        }
     
-    # Compute peer comparison statistics for direct peers
-    if group_map:
-        scores = [score for score, _ in group_map.values()]
-        average_score = np.mean(scores) if scores else base_composite
-        std_dev = np.std(scores) if scores else 0.0
-        peer_comparison = {
-            'average_score': average_score,
-            'std_dev': std_dev,
-            'count': len(group_map)
-        }
+    # Filter out already visited tickers to avoid duplicate work
+    filtered_peers = [peer for peer in peers_list if peer not in visited]
+    
+    # Analyze peers at current depth
+    peer_scores = []
+    peer_data = []
+    
+    if filtered_peers:
+        # Screen all peers in one batch
+        peers_results = await screen_stocks_async(filtered_peers)
+        peers_dict = {res[0]: res[1] for res in peers_results}
+        
+        for peer in filtered_peers:
+            if peer in peers_dict:
+                peer_score = peers_dict[peer]
+                peer_scores.append(peer_score)
+                peer_data.append({
+                    'ticker': peer,
+                    'score': peer_score
+                })
+    
+    # Compute peer statistics
+    if peer_scores:
+        average_score = np.mean(peer_scores)
+        std_dev = np.std(peer_scores)
     else:
-        peer_comparison = {
-            'average_score': base_composite,
-            'std_dev': 0.0,
-            'count': 0
-        }
+        average_score = ticker_score
+        std_dev = 0.0
     
     return {
         'ticker': ticker,
-        'composite_score': base_composite,
-        'fundamentals': base_details,
-        'peers': peers_analysis,
-        'peer_comparison': peer_comparison
+        'peer_comparison': {
+            'average_score': average_score,
+            'std_dev': std_dev,
+            'count': len(peer_scores)
+        },
+        'peers': peer_data
     }
+
+
+async def gather_peer_analysis(tickers: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Gather peer analysis for a list of tickers, all within a single async context.
+    """
+    # Use a shared visited set to avoid analyzing the same ticker multiple times
+    visited = set()
+    
+    # Create tasks for analyzing each ticker with its peers
+    tasks = [analyze_ticker_with_peers(ticker, depth=1, visited=visited) for ticker in tickers]
+    
+    # Run all tasks concurrently
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Map results to tickers
+    peer_analysis = {}
+    for i, ticker in enumerate(tickers):
+        if isinstance(results[i], Exception):
+            logger.error(f"Error in peer analysis for {ticker}: {results[i]}")
+            # Default value with self as peer
+            peer_analysis[ticker] = {
+                'peer_comparison': {
+                    'average_score': 0.0,  # Will be updated later with actual score
+                    'std_dev': 0.0,
+                    'count': 0
+                },
+                'peers': []
+            }
+        else:
+            peer_analysis[ticker] = results[i]
+    
+    return peer_analysis
+

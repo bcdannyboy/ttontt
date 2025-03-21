@@ -121,32 +121,60 @@ def perform_stock_screening(tickers, batch_size=10):
         all_results = [(t, s, d) for t, s, d in all_results if abs(s) < threshold]
 
         # --- Integrate peer analysis ---
-        async def gather_peer_data(ticker_list):
-            tasks = {
-                ticker: asyncio.create_task(fundamentals.recursive_peers_analysis(ticker, depth=1))
-                for ticker in ticker_list
-            }
-            results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-            return dict(zip(tasks.keys(), results))
-        
+        # Get list of tickers to analyze
         tickers_to_analyze = [ticker for ticker, _, _ in all_results]
-        peer_data_dict = asyncio.run(gather_peer_data(tickers_to_analyze))
-        peer_weight = 0.1  # 10% adjustment factor.
+        
+        # Set up peer data dictionary
+        peer_data_dict = {}
+        
+        # Run peer analysis in a dedicated event loop
+        try:
+            # Important: Create and use a new event loop specifically for peer analysis
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # Execute the peer analysis within this loop by correctly referencing the function
+            try:
+                peer_data_dict = loop.run_until_complete(fundamentals.gather_peer_analysis(tickers_to_analyze))
+            except Exception as inner_e:
+                logger.error(f"Error during peer analysis execution: {inner_e}")
+                logger.debug(traceback.format_exc())
+            finally:
+                loop.close()
+        except Exception as outer_e:
+            logger.error(f"Error setting up peer analysis loop: {outer_e}")
+            logger.debug(traceback.format_exc())
+        
+        # Peer weight determines how much to adjust scores based on peer comparison
+        peer_weight = 0.1  # 10% adjustment factor
+        
+        # Process each stock's results with peer data
         for idx, (ticker, composite_score, details) in enumerate(all_results):
             try:
+                # Get peer data for this ticker
                 peer_data = peer_data_dict.get(ticker, {})
                 peer_comp = peer_data.get('peer_comparison', {})
-                # If no peer data found, default to stock’s own composite.
+                
+                # If no peer average available, use the stock's own score
                 peer_avg = peer_comp.get('average_score', composite_score)
+                
+                # Calculate peer delta: the difference between this stock's score and peer average
+                peer_delta = composite_score - peer_avg
+                
+                # Store peer comparison data in details
+                details['peer_comparison'] = peer_avg
+                details['peer_delta'] = peer_delta
+                
+                # Adjust composite score by adding peer_weight * peer_delta
+                adjusted_score = composite_score + (peer_weight * peer_delta)
+                
+                # Update the result with the adjusted score
+                all_results[idx] = (ticker, adjusted_score, details)
             except Exception as e:
-                logger.error(f"Error fetching peers for {ticker}: {e}")
-                peer_avg = composite_score
-            details['peer_comparison'] = peer_avg
-            peer_delta = composite_score - peer_avg
-            details['peer_delta'] = peer_delta
-            # Adjust composite score by adding peer_weight * (stock - peer average)
-            new_composite = composite_score + peer_weight * peer_delta
-            all_results[idx] = (ticker, new_composite, details)
+                logger.error(f"Error processing peer data for {ticker}: {e}")
+                logger.debug(traceback.format_exc())
+                # Keep original score if there's an error
+        
         return all_results
     except Exception as e:
         logger.error(f"Error during stock screening: {e}")
