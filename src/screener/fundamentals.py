@@ -736,25 +736,31 @@ def calculate_z_scores(data_dict: Dict[str, Dict[str, float]]) -> Dict[str, Dict
             z_scores[ticker][metric] = z_score.item()
     return z_scores
 
-
 def calculate_weighted_score(z_scores: Dict[str, float], weights: Dict[str, float]) -> float:
     """
     Calculate weighted score based on z-scores and weights.
+    Penalizes missing metrics by assigning worst-case z-scores:
+      - For metrics with positive weight, missing data is treated as a z-score of -3.
+      - For metrics with negative weight, missing data is treated as a z-score of +3.
     """
-    if not z_scores or not weights:
+    if not weights:
         return 0
     score = 0
     total_weight = 0
-    valid_metrics = 0
-    common_metrics = set(z_scores.keys()) & set(weights.keys())
-    for metric in common_metrics:
-        weight = weights[metric]
-        score += z_scores[metric] * weight
+    # Loop over all metrics that are defined by the weight configuration.
+    for metric, weight in weights.items():
+        # Use the provided z-score if available; otherwise, apply a penalty.
+        if metric in z_scores:
+            metric_z = z_scores[metric]
+        else:
+            # Penalize missing data: worst-case z-score for this metric.
+            metric_z = -3 if weight > 0 else 3
+        score += metric_z * weight
         total_weight += abs(weight)
-        valid_metrics += 1
-    if total_weight == 0 or valid_metrics == 0:
+    if total_weight == 0:
         return 0
     return score / total_weight
+
 
 async def process_ticker_async(ticker: str) -> Tuple[str, Optional[Dict[str, float]]]:
     """
@@ -786,14 +792,17 @@ async def process_ticker_async(ticker: str) -> Tuple[str, Optional[Dict[str, flo
         return (ticker, None)
 
 def process_ticker_sync(ticker: str) -> Tuple[str, Optional[Dict[str, float]]]:
-    """
-    Synchronous wrapper for process_ticker_async.
-    """
     try:
-        return asyncio.run(process_ticker_async(ticker))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(process_ticker_async(ticker))
+        return result
     except Exception as e:
         logger.error(f"Error in process_ticker_sync for {ticker}: {e}")
         return (ticker, None)
+    finally:
+        loop.close()
+
 
 async def screen_stocks_async(tickers: List[str], max_concurrent: int = 20) -> List[Tuple[str, float, Dict[str, Any]]]:
     """

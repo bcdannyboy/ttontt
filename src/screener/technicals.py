@@ -143,6 +143,9 @@ CACHE_SIZE = 1000
 api_cache = {}
 indicators_cache = {}
 
+MISSING_DATA_PENALTY = 1.0
+MIN_VALID_METRICS = 3
+
 def get_openbb_client():
     """Returns a thread-local OpenBB client instance."""
     if not hasattr(thread_local, "openbb_client"):
@@ -1539,58 +1542,63 @@ def calculate_z_scores(data_dict: Dict[str, Dict[str, float]]) -> Dict[str, Dict
 def calculate_weighted_score(z_scores: Dict[str, float], weights: Dict[str, float]) -> float:
     """
     Calculate weighted score based on z-scores and weights.
-    Handles sparse data with minimum thresholds and category fallbacks.
+    If many indicators are missing (or empty), a penalty is applied so that lack of data is not
+    treated as neutral.
     """
     if not z_scores or not weights:
-        return 0
-    
+        return -MISSING_DATA_PENALTY  # Heavily penalize if no data at all
+
     # Group metrics by category for fallback mechanism
     category_metrics = {
-        'trend': ['sma_cross_signal', 'ema_cross_signal', 'price_rel_sma', 'price_rel_ema', 
-                 'adx_trend', 'ichimoku_signal', 'macd_signal', 'bb_position', 'trend_signal'],
-        'momentum': ['rsi_signal', 'stoch_signal', 'cci_signal', 'clenow_momentum', 
-                    'fisher_transform', 'price_performance_1m', 'price_performance_3m', 'momentum_signal'],
-        'volatility': ['atr_percent', 'bb_width', 'keltner_width', 'volatility_cones', 
-                      'donchian_width', 'price_target_upside'],
+        'trend': ['sma_cross_signal', 'ema_cross_signal', 'price_rel_sma', 'price_rel_ema',
+                  'adx_trend', 'ichimoku_signal', 'macd_signal', 'bb_position', 'trend_signal'],
+        'momentum': ['rsi_signal', 'stoch_signal', 'cci_signal', 'clenow_momentum',
+                     'fisher_transform', 'price_performance_1m', 'price_performance_3m', 'momentum_signal'],
+        'volatility': ['atr_percent', 'bb_width', 'keltner_width', 'volatility_cones',
+                       'donchian_width', 'price_target_upside'],
         'volume': ['obv_trend', 'adl_trend', 'adosc_signal', 'vwap_position', 'volume_trend']
     }
-    
-    # Find which categories have data
+
+    # Identify available categories (at least one metric available)
     available_categories = set()
     for category, metrics in category_metrics.items():
         if any(metric in z_scores for metric in metrics):
             available_categories.add(category)
-    
-    # If we're missing critical categories, use fallbacks for basic scoring
+
+    # If few categories have data, flag fallback usage and add some momentum/volume if available
     fallback_used = False
     if len(available_categories) < 2:
         fallback_used = True
-        # Ensure we have at least momentum data from price performance
         if 'momentum' not in available_categories and ('price_performance_1m' in z_scores or 'price_performance_3m' in z_scores):
             available_categories.add('momentum')
-            
-        # Ensure we have volume data if volume_trend is available
         if 'volume' not in available_categories and 'volume_trend' in z_scores:
             available_categories.add('volume')
-    
+
     score = 0
     total_weight = 0
     valid_metrics = 0
-    
-    # Standard weighted scoring for available metrics
+
+    # Use only the metrics that appear in both z_scores and weights
     common_metrics = set(z_scores.keys()) & set(weights.keys())
     for metric in common_metrics:
         weight = weights[metric]
         score += z_scores[metric] * weight
         total_weight += abs(weight)
         valid_metrics += 1
-    
-    # Return early if we have sufficient data
-    if valid_metrics >= 3 and total_weight > 0:
-        return score / total_weight
-    
-    # Fallback: Calculate score based on category averages for sparse data
-    if fallback_used or valid_metrics < 3:
+
+    if valid_metrics >= MIN_VALID_METRICS and total_weight > 0:
+        base_score = score / total_weight
+        total_metrics = len(weights)
+        missing_count = total_metrics - valid_metrics
+        # Apply a penalty proportional to the fraction of missing indicators
+        penalty = (missing_count / total_metrics) * MISSING_DATA_PENALTY
+        # Extra fixed penalty if the number of valid metrics is still below our minimum threshold
+        extra_penalty = MISSING_DATA_PENALTY if valid_metrics < MIN_VALID_METRICS else 0.0
+        final_score = base_score - penalty - extra_penalty
+        return final_score
+
+    # Fallback: if data is too sparse, use category averages and subtract a fixed penalty
+    if fallback_used or valid_metrics < MIN_VALID_METRICS:
         category_scores = {}
         category_weights = {
             'trend': 0.30,
@@ -1598,24 +1606,22 @@ def calculate_weighted_score(z_scores: Dict[str, float], weights: Dict[str, floa
             'volatility': 0.20,
             'volume': 0.20
         }
-        
-        # Calculate average z-score for each available category
         for category, metrics in category_metrics.items():
             available_metrics = [m for m in metrics if m in z_scores]
             if available_metrics:
                 category_scores[category] = sum(z_scores[m] for m in available_metrics) / len(available_metrics)
-        
-        # Compute weighted average of available category scores
         if category_scores:
             total_cat_weight = sum(category_weights[cat] for cat in category_scores)
             if total_cat_weight > 0:
-                return sum(category_scores[cat] * category_weights[cat] for cat in category_scores) / total_cat_weight
-    
-    # Last resort: return simple average if everything else fails
+                base_score = sum(category_scores[cat] * category_weights[cat] for cat in category_scores) / total_cat_weight
+                final_score = base_score - MISSING_DATA_PENALTY  # fixed penalty for sparse data
+                return final_score
+
+    # Last resort: if some metrics are available, return their average minus a fixed penalty.
     if valid_metrics > 0:
-        return sum(z_scores[metric] for metric in common_metrics) / valid_metrics
-    
-    return 0.0  # No valid metrics
+        return (sum(z_scores[metric] for metric in common_metrics) / valid_metrics) - MISSING_DATA_PENALTY
+
+    return -MISSING_DATA_PENALTY  # No valid metrics: assign maximum penalty
 
 async def process_ticker_async(ticker: str) -> Tuple[str, Optional[Dict[str, float]]]:
     """
@@ -1647,14 +1653,17 @@ async def process_ticker_async(ticker: str) -> Tuple[str, Optional[Dict[str, flo
         return (ticker, None)
 
 def process_ticker_sync(ticker: str) -> Tuple[str, Optional[Dict[str, float]]]:
-    """
-    Synchronous wrapper for process_ticker_async.
-    """
     try:
-        return asyncio.run(process_ticker_async(ticker))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(process_ticker_async(ticker))
+        return result
     except Exception as e:
         logger.error(f"Error in process_ticker_sync for {ticker}: {e}")
         return (ticker, None)
+    finally:
+        loop.close()
+
 
 async def screen_stocks_async(tickers: List[str], max_concurrent: int = 20) -> List[Tuple[str, float, Dict[str, Any]]]:
     """

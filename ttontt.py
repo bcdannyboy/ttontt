@@ -95,7 +95,6 @@ def generate_stock_report_task(ticker, score, details):
             "error": True
         }
 
-
 def generate_technical_report_task(ticker, score, details):
     """
     Generates a detailed technical analysis report for a given ticker.
