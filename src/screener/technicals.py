@@ -153,9 +153,6 @@ def get_openbb_client():
     return thread_local.openbb_client
 
 async def rate_limited_api_call(func, *args, **kwargs):
-    """
-    Rate limiting for API calls with async support and caching.
-    """
     cache_key = f"{func.__name__}_{str(args)}_{str(kwargs)}"
     if cache_key in api_cache:
         return api_cache[cache_key]
@@ -171,19 +168,32 @@ async def rate_limited_api_call(func, *args, **kwargs):
                     await asyncio.sleep(sleep_time)
             api_call_timestamps.append(time.time())
         try:
-            if asyncio.iscoroutinefunction(func):
-                result = await func(*args, **kwargs)
-            else:
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, lambda: func(*args, **kwargs))
-            api_cache[cache_key] = result
-            if len(api_cache) > CACHE_SIZE:
-                oldest_key = next(iter(api_cache))
-                del api_cache[oldest_key]
-            return result
+            # Try a few times if you hit a rate limit error
+            for attempt in range(3):
+                try:
+                    if asyncio.iscoroutinefunction(func):
+                        result = await func(*args, **kwargs)
+                    else:
+                        loop = asyncio.get_event_loop()
+                        result = await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+                    api_cache[cache_key] = result
+                    # Maintain cache size
+                    if len(api_cache) > CACHE_SIZE:
+                        oldest_key = next(iter(api_cache))
+                        del api_cache[oldest_key]
+                    return result
+                except Exception as e:
+                    if "Limit Reach" in str(e):
+                        logger.warning(f"Attempt {attempt+1}: Rate limit error encountered. Retrying after delay...")
+                        await asyncio.sleep(60)  # wait before retrying
+                    else:
+                        raise
+            # If all attempts fail, raise the last exception
+            raise Exception("Max retry attempts reached for API call")
         except Exception as e:
             logger.error(f"API call error: {e}")
             raise
+
 
 def get_attribute_value(obj: Any, attr_name: str, default=0) -> Any:
     """
@@ -1652,22 +1662,16 @@ async def process_ticker_async(ticker: str) -> Tuple[str, Optional[Dict[str, flo
         logger.debug(traceback.format_exc())
         return (ticker, None)
 
-def process_ticker_sync(ticker: str) -> Tuple[str, Optional[Dict[str, float]]]:
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(process_ticker_async(ticker))
-        return result
-    except Exception as e:
-        logger.error(f"Error in process_ticker_sync for {ticker}: {e}")
-        return (ticker, None)
-    finally:
-        loop.close()
-
-
 async def screen_stocks_async(tickers: List[str], max_concurrent: int = 20) -> List[Tuple[str, float, Dict[str, Any]]]:
     """
-    Asynchronously screen stocks based on technical indicators.
+    Asynchronously screen stocks based on technical indicators using a single event loop.
+    
+    Args:
+        tickers (List[str]): List of ticker symbols.
+        max_concurrent (int): Maximum number of concurrent API calls.
+    
+    Returns:
+        List[Tuple[str, float, Dict[str, Any]]]: List of tuples (ticker, composite_score, detailed_results)
     """
     results = []
     all_indicators = {}
@@ -1731,55 +1735,37 @@ async def screen_stocks_async(tickers: List[str], max_concurrent: int = 20) -> L
     logger.info(f"Successfully screened {len(results)} stocks using technical indicators.")
     return results
 
-def screen_stocks(tickers: List[str], max_workers: int = None) -> List[Tuple[str, float, Dict[str, Any]]]:
+def process_ticker_sync(ticker: str) -> Tuple[str, Optional[Dict[str, float]]]:
     """
-    Synchronously screen stocks using technical indicators.
+    Synchronously process a single ticker by calling its asynchronous processor
+    on a single event loop via asyncio.run().
+    
+    Args:
+        ticker (str): The stock ticker symbol.
+    
+    Returns:
+        Tuple[str, Optional[Dict[str, float]]]: (ticker, indicators dictionary) or (ticker, None) on error.
     """
-    if max_workers is None:
-        max_workers = min(32, os.cpu_count() * 4)
+    try:
+        result = asyncio.run(process_ticker_async(ticker))
+        return result
+    except Exception as e:
+        logger.error(f"Error in process_ticker_sync for {ticker}: {e}")
+        return (ticker, None)
+
+def screen_stocks(tickers: List[str]) -> List[Tuple[str, float, Dict[str, Any]]]:
+    """
+    Synchronously screen stocks using technical indicators by running the asynchronous 
+    screening function in a single event loop.
     
-    all_indicators = {}
-    valid_tickers = []
+    Args:
+        tickers (List[str]): List of stock ticker symbols.
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for ticker, indicators in tqdm(executor.map(process_ticker_sync, tickers), total=len(tickers), desc="Processing stocks (technical)"):
-            if indicators is not None:
-                all_indicators[ticker] = indicators
-                valid_tickers.append(ticker)
-    
-    if not valid_tickers:
-        logger.warning("No valid tickers could be processed for technical analysis.")
-        return []
-    
-    normalized_indicators = normalize_data(all_indicators)
-    z_scores = calculate_z_scores(normalized_indicators)
-    
-    results = []
-    for ticker in valid_tickers:
-        ticker_z_scores = z_scores[ticker]
-        
-        category_scores = {
-            'trend': calculate_weighted_score(ticker_z_scores, TREND_WEIGHTS),
-            'momentum': calculate_weighted_score(ticker_z_scores, MOMENTUM_WEIGHTS),
-            'volatility': calculate_weighted_score(ticker_z_scores, VOLATILITY_WEIGHTS),
-            'volume': calculate_weighted_score(ticker_z_scores, VOLUME_WEIGHTS)
-        }
-        
-        composite_score = sum(score * CATEGORY_WEIGHTS[cat] for cat, score in category_scores.items())
-        
-        detailed_results = {
-            'raw_indicators': all_indicators[ticker],
-            'normalized_indicators': normalized_indicators[ticker],
-            'z_scores': ticker_z_scores,
-            'category_scores': category_scores,
-            'composite_score': composite_score
-        }
-        
-        results.append((ticker, composite_score, detailed_results))
-    
-    results.sort(key=lambda x: x[1], reverse=True)
-    logger.info(f"Successfully screened {len(results)} stocks using technical indicators.")
-    return results
+    Returns:
+        List[Tuple[str, float, Dict[str, Any]]]: List of tuples (ticker, composite_score, detailed_results)
+    """
+    return asyncio.run(screen_stocks_async(tickers, max_concurrent=20))
+
 
 def get_indicator_contributions(ticker: str) -> pd.DataFrame:
     """
