@@ -1662,7 +1662,7 @@ async def process_ticker_async(ticker: str) -> Tuple[str, Optional[Dict[str, flo
         logger.debug(traceback.format_exc())
         return (ticker, None)
 
-async def screen_stocks_async(tickers: List[str], max_concurrent: int = 20) -> List[Tuple[str, float, Dict[str, Any]]]:
+async def screen_stocks_async(tickers: List[str], max_concurrent: int = os.cpu_count()*2) -> List[Tuple[str, float, Dict[str, Any]]]:
     """
     Asynchronously screen stocks based on technical indicators using a single event loop.
     
@@ -1764,7 +1764,7 @@ def screen_stocks(tickers: List[str]) -> List[Tuple[str, float, Dict[str, Any]]]
     Returns:
         List[Tuple[str, float, Dict[str, Any]]]: List of tuples (ticker, composite_score, detailed_results)
     """
-    return asyncio.run(screen_stocks_async(tickers, max_concurrent=20))
+    return asyncio.run(screen_stocks_async(tickers, max_concurrent=os.cpu_count()*2))
 
 
 def get_indicator_contributions(ticker: str) -> pd.DataFrame:

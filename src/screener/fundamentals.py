@@ -804,7 +804,7 @@ def process_ticker_sync(ticker: str) -> Tuple[str, Optional[Dict[str, float]]]:
         loop.close()
 
 
-async def screen_stocks_async(tickers: List[str], max_concurrent: int = 20) -> List[Tuple[str, float, Dict[str, Any]]]:
+async def screen_stocks_async(tickers: List[str], max_concurrent: int = os.cpu_count()*2) -> List[Tuple[str, float, Dict[str, Any]]]:
     """
     Asynchronously screen stocks.
     """
