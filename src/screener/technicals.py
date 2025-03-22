@@ -234,90 +234,63 @@ def get_attribute_value(obj: Any, attr_name: str, default=0) -> Any:
     return default
 
 async def get_technical_data_async(ticker: str) -> Tuple[str, Dict[str, Any]]:
-    """
-    Async version of get_technical_data using OpenBB API.
-    Fetches all required technical indicator data for a stock, handling provider fallbacks properly.
-    """
     obb_client = get_openbb_client()
     technical_data = {}
     
     try:
-        # Get historical price data (1 year)
         one_year_ago = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
         price_history_task = rate_limited_api_call(
             obb_client.equity.price.historical,
             symbol=ticker, start_date=one_year_ago, provider='fmp'
         )
-        
-        # Get price performance data
         price_perf_task = rate_limited_api_call(
             obb_client.equity.price.performance,
             symbol=ticker, provider='fmp'
         )
-        
-        # Get consensus price target
         price_target_task = rate_limited_api_call(
             obb_client.equity.estimates.consensus,
             symbol=ticker, provider='fmp'
         )
-        
-        # Execute first batch of API calls
         price_history_response, price_perf_response, price_target_response = await asyncio.gather(
             price_history_task, price_perf_task, price_target_task,
             return_exceptions=True
         )
-        
         if isinstance(price_history_response, Exception):
             logger.error(f"Essential price history data fetch failed for {ticker}: {price_history_response}")
             return (ticker, technical_data)
-        
-        # Store the results
         technical_data['price_history'] = price_history_response.results if not isinstance(price_history_response, Exception) else []
         technical_data['price_performance'] = price_perf_response.results if not isinstance(price_perf_response, Exception) else []
         technical_data['price_target'] = price_target_response.results if not isinstance(price_target_response, Exception) else []
         
-        # If we have price history, calculate technical indicators
         if technical_data['price_history']:
-            # Calculate SMA indicators
             sma_50_task = rate_limited_api_call(
                 obb_client.technical.sma,
                 data=technical_data['price_history'], target='close', length=50
             )
-            
             sma_200_task = rate_limited_api_call(
                 obb_client.technical.sma,
                 data=technical_data['price_history'], target='close', length=200
             )
-            
-            # Calculate EMA indicators
             ema_12_task = rate_limited_api_call(
                 obb_client.technical.ema,
                 data=technical_data['price_history'], target='close', length=12
             )
-            
             ema_26_task = rate_limited_api_call(
                 obb_client.technical.ema,
                 data=technical_data['price_history'], target='close', length=26
             )
-            
             ema_50_task = rate_limited_api_call(
                 obb_client.technical.ema,
                 data=technical_data['price_history'], target='close', length=50
             )
-            
-            # Calculate Bollinger Bands
             bbands_task = rate_limited_api_call(
                 obb_client.technical.bbands,
                 data=technical_data['price_history'], target='close', length=20, std=2
             )
-            
-            # Calculate Keltner Channels
             keltner_task = rate_limited_api_call(
                 obb_client.technical.kc,
                 data=technical_data['price_history'], length=20, scalar=2
             )
-            
-            # Execute second batch of API calls
             (
                 sma_50_response, sma_200_response, 
                 ema_12_response, ema_26_response, ema_50_response,
@@ -328,8 +301,6 @@ async def get_technical_data_async(ticker: str) -> Tuple[str, Dict[str, Any]]:
                 bbands_task, keltner_task,
                 return_exceptions=True
             )
-            
-            # Store the results for moving averages and bands
             technical_data['sma_50'] = sma_50_response.results if not isinstance(sma_50_response, Exception) else []
             technical_data['sma_200'] = sma_200_response.results if not isinstance(sma_200_response, Exception) else []
             technical_data['ema_12'] = ema_12_response.results if not isinstance(ema_12_response, Exception) else []
@@ -338,43 +309,34 @@ async def get_technical_data_async(ticker: str) -> Tuple[str, Dict[str, Any]]:
             technical_data['bbands'] = bbands_response.results if not isinstance(bbands_response, Exception) else []
             technical_data['keltner'] = keltner_response.results if not isinstance(keltner_response, Exception) else []
             
-            # Calculate more advanced indicators
             macd_task = rate_limited_api_call(
                 obb_client.technical.macd,
                 data=technical_data['price_history'], target='close', fast=12, slow=26, signal=9
             )
-            
             rsi_task = rate_limited_api_call(
                 obb_client.technical.rsi,
                 data=technical_data['price_history'], target='close', length=14
             )
-            
             stoch_task = rate_limited_api_call(
                 obb_client.technical.stoch,
                 data=technical_data['price_history'], fast_k_period=14, slow_d_period=3
             )
-            
             cci_task = rate_limited_api_call(
                 obb_client.technical.cci,
                 data=technical_data['price_history'], length=20
             )
-            
             adx_task = rate_limited_api_call(
                 obb_client.technical.adx,
                 data=technical_data['price_history'], length=14
             )
-            
             obv_task = rate_limited_api_call(
                 obb_client.technical.obv,
                 data=technical_data['price_history']
             )
-            
             ad_task = rate_limited_api_call(
                 obb_client.technical.ad,
                 data=technical_data['price_history']
             )
-            
-            # Execute third batch of API calls
             (
                 macd_response, rsi_response, stoch_response, 
                 cci_response, adx_response, obv_response, ad_response
@@ -383,8 +345,6 @@ async def get_technical_data_async(ticker: str) -> Tuple[str, Dict[str, Any]]:
                 cci_task, adx_task, obv_task, ad_task,
                 return_exceptions=True
             )
-            
-            # Store the results for oscillators and other indicators
             technical_data['macd'] = macd_response.results if not isinstance(macd_response, Exception) else []
             technical_data['rsi'] = rsi_response.results if not isinstance(rsi_response, Exception) else []
             technical_data['stoch'] = stoch_response.results if not isinstance(stoch_response, Exception) else []
@@ -393,53 +353,41 @@ async def get_technical_data_async(ticker: str) -> Tuple[str, Dict[str, Any]]:
             technical_data['obv'] = obv_response.results if not isinstance(obv_response, Exception) else []
             technical_data['ad'] = ad_response.results if not isinstance(ad_response, Exception) else []
             
-            # Calculate additional indicators
             atr_task = rate_limited_api_call(
                 obb_client.technical.atr,
                 data=technical_data['price_history'], length=14
             )
-            
             donchian_task = rate_limited_api_call(
                 obb_client.technical.donchian,
                 data=technical_data['price_history'], lower_length=20, upper_length=20
             )
-            
             fisher_task = rate_limited_api_call(
                 obb_client.technical.fisher,
                 data=technical_data['price_history'], length=14
             )
-            
             ichimoku_task = rate_limited_api_call(
                 obb_client.technical.ichimoku,
                 data=technical_data['price_history'], conversion=9, base=26
             )
-            
             adosc_task = rate_limited_api_call(
                 obb_client.technical.adosc,
                 data=technical_data['price_history'], fast=3, slow=10
             )
-            
             vwap_task = rate_limited_api_call(
                 obb_client.technical.vwap,
                 data=technical_data['price_history'], anchor='D'
             )
-            
             clenow_task = rate_limited_api_call(
                 obb_client.technical.clenow,
                 data=technical_data['price_history'], period=90
             )
-            
-            # Execute fourth batch of API calls
             (
                 atr_response, donchian_response, fisher_response, 
                 ichimoku_response, adosc_response, vwap_response, clenow_response
             ) = await asyncio.gather(
-                atr_task, donchian_task, fisher_task,
-                ichimoku_task, adosc_task, vwap_task, clenow_task,
+                atr_task, donchian_task, fisher_task, ichimoku_task, adosc_task, vwap_task, clenow_task,
                 return_exceptions=True
             )
-            
-            # Store the results for additional indicators
             technical_data['atr'] = atr_response.results if not isinstance(atr_response, Exception) else []
             technical_data['donchian'] = donchian_response.results if not isinstance(donchian_response, Exception) else []
             technical_data['fisher'] = fisher_response.results if not isinstance(fisher_response, Exception) else []
@@ -448,7 +396,6 @@ async def get_technical_data_async(ticker: str) -> Tuple[str, Dict[str, Any]]:
             technical_data['vwap'] = vwap_response.results if not isinstance(vwap_response, Exception) else []
             technical_data['clenow'] = clenow_response.results if not isinstance(clenow_response, Exception) else []
             
-            # Calculate additional technical indicators from OpenBB documentation
             try:
                 aroon_task = rate_limited_api_call(
                     obb_client.technical.aroon,
@@ -515,19 +462,22 @@ async def get_technical_data_async(ticker: str) -> Tuple[str, Dict[str, Any]]:
                 logger.warning(f"Error fetching Demark Sequential for {ticker}: {e}")
                 technical_data['demark'] = []
             
-            # Calculate volatility cones
-            try:
-                cones_task = rate_limited_api_call(
-                    obb_client.technical.cones,
-                    data=technical_data['price_history'], lower_q=0.25, upper_q=0.75, model='std'
-                )
-                cones_response = await cones_task
-                technical_data['cones'] = cones_response.results if not isinstance(cones_response, Exception) else []
-            except Exception as e:
-                logger.warning(f"Error fetching volatility cones for {ticker}: {e}")
-                technical_data['cones'] = []
+            # Calculate volatility cones for multiple models
+            cone_models = ['std', 'garman_klass', 'hodges_tompkins', 'rogers_satchell', 'yang_zhang']
+            cones_results = {}
+            for model in cone_models:
+                try:
+                    cones_task = rate_limited_api_call(
+                        obb_client.technical.cones,
+                        data=technical_data['price_history'], lower_q=0.25, upper_q=0.75, model=model
+                    )
+                    cones_response = await cones_task
+                    if not isinstance(cones_response, Exception) and cones_response.results:
+                        cones_results[model] = cones_response.results
+                except Exception as e:
+                    logger.warning(f"Error fetching volatility cones for model {model} for {ticker}: {e}")
+            technical_data['cones'] = cones_results
             
-            # Try to get price targets
             try:
                 price_targets_task = rate_limited_api_call(
                     obb_client.equity.estimates.price_target,
@@ -546,17 +496,11 @@ async def get_technical_data_async(ticker: str) -> Tuple[str, Dict[str, Any]]:
     return (ticker, technical_data)
 
 def extract_indicators_from_technical_data(technical_data):
-    """
-    Extract all relevant technical indicators from the data.
-    Handles missing data gracefully with fallbacks and derived indicators.
-    Ensures no null values are returned in the final indicator dictionary.
-    """
     indicators = {}
     
     if not technical_data or not isinstance(technical_data, dict):
         return {}
     
-    # First, check what data we have available
     has_price_history = bool(technical_data.get('price_history'))
     has_price_performance = bool(technical_data.get('price_performance'))
     has_sma_data = bool(technical_data.get('sma_50')) or bool(technical_data.get('sma_200'))
@@ -564,31 +508,25 @@ def extract_indicators_from_technical_data(technical_data):
     has_macd_data = bool(technical_data.get('macd'))
     has_rsi_data = bool(technical_data.get('rsi'))
     has_stoch_data = bool(technical_data.get('stoch'))
-    has_volume_data = has_price_history  # We can derive volume data from price history
+    has_volume_data = has_price_history
     
-    # Helper function to safely extract numerical values from Data objects
     def extract_value(data_obj):
         if data_obj is None:
             return None
-        # If it's already a number, return it directly
         if isinstance(data_obj, (int, float)):
             return data_obj
-        # If it's a Data object, try to get its value attribute
         if hasattr(data_obj, 'value'):
             return data_obj.value
-        # If it's a dictionary-like object, try to get the value
         if hasattr(data_obj, '__getitem__'):
             try:
                 return data_obj['value']
             except (KeyError, TypeError):
                 pass
-        # If it's a Data object with a float representation, use that
         try:
             return float(data_obj)
         except (ValueError, TypeError):
             return None
     
-    # Extract current price - this is essential
     current_price = None
     if has_price_history:
         price_history = technical_data['price_history']
@@ -600,10 +538,7 @@ def extract_indicators_from_technical_data(technical_data):
                 indicators['current_price'] = current_price
     
     if not current_price and has_price_performance and technical_data.get('price_performance'):
-        # Try to estimate current price from other data if available
-        # This is a fallback if price history isn't available
         try:
-            # If we have any recent price target data, use it as a reference
             if technical_data.get('price_target') and len(technical_data['price_target']) > 0:
                 target_data = technical_data['price_target'][0]
                 if hasattr(target_data, 'target_consensus') and extract_value(target_data.target_consensus):
@@ -612,10 +547,8 @@ def extract_indicators_from_technical_data(technical_data):
         except Exception:
             pass
     
-    # If we still don't have a current price, we can't proceed with meaningful analysis
     if not current_price:
-        # Set default fallback values for essential metrics to avoid nulls
-        indicators['current_price'] = 100.0  # Arbitrary default
+        indicators['current_price'] = 100.0
         indicators['price_performance_1d'] = 0.0
         indicators['price_performance_1w'] = 0.0
         indicators['price_performance_1m'] = 0.0
@@ -635,8 +568,8 @@ def extract_indicators_from_technical_data(technical_data):
         indicators['cci_signal'] = 0.0
         indicators['clenow_momentum'] = 0.0
         indicators['fisher_transform'] = 0.0
-        indicators['atr_percent'] = 0.02  # 2% default volatility
-        indicators['bb_width'] = 0.05  # 5% default width
+        indicators['atr_percent'] = 0.02
+        indicators['bb_width'] = 0.05
         indicators['keltner_width'] = 0.05
         indicators['volatility_cones'] = 0.0
         indicators['donchian_width'] = 0.05
@@ -650,11 +583,8 @@ def extract_indicators_from_technical_data(technical_data):
         indicators['momentum_signal'] = 0.0
         return indicators
     
-    # Extract price performance data - critical for basic technical analysis
     if has_price_performance and technical_data.get('price_performance') and len(technical_data['price_performance']) > 0:
         perf_data = technical_data['price_performance'][0]
-        
-        # Extract various time period performances
         one_day = get_attribute_value(perf_data, 'one_day', 0)
         one_week = get_attribute_value(perf_data, 'one_week', 0)
         one_month = get_attribute_value(perf_data, 'one_month', 0)
@@ -669,32 +599,25 @@ def extract_indicators_from_technical_data(technical_data):
         indicators['price_performance_ytd'] = year_to_date
         indicators['price_performance_1y'] = one_year
         
-        # Derive momentum indicators from performance data
-        # This ensures we always have a momentum signal even if oscillators are missing
         momentum_signal = 0.0
         if one_month is not None:
-            momentum_signal += one_month * 0.6  # 60% weight to one month performance
+            momentum_signal += one_month * 0.6
         if three_month is not None:
-            momentum_signal += three_month * 0.4  # 40% weight to three month performance
-            
+            momentum_signal += three_month * 0.4
         indicators['momentum_signal'] = momentum_signal
         
-        # Convert to RSI-like scale (0-100) for compatibility if RSI is missing
         if momentum_signal is not None:
-            # Scale from typical -0.2 to +0.2 range to 0-100 range
             pseudo_rsi = 50 + momentum_signal * 250
-            pseudo_rsi = max(0, min(100, pseudo_rsi))  # Clamp to 0-100
+            pseudo_rsi = max(0, min(100, pseudo_rsi))
             indicators['rsi'] = pseudo_rsi
             
-            # Calculate RSI signal (scaled from -1 to 1)
             if pseudo_rsi >= 70:
-                indicators['rsi_signal'] = -1.0  # Overbought
+                indicators['rsi_signal'] = -1.0
             elif pseudo_rsi <= 30:
-                indicators['rsi_signal'] = 1.0   # Oversold
+                indicators['rsi_signal'] = 1.0
             else:
-                indicators['rsi_signal'] = (50 - pseudo_rsi) / 20  # Linear scale between
+                indicators['rsi_signal'] = (50 - pseudo_rsi) / 20
     else:
-        # Set default values if performance data is missing
         indicators['price_performance_1d'] = 0.0
         indicators['price_performance_1w'] = 0.0
         indicators['price_performance_1m'] = 0.0
@@ -702,10 +625,9 @@ def extract_indicators_from_technical_data(technical_data):
         indicators['price_performance_ytd'] = 0.0
         indicators['price_performance_1y'] = 0.0
         indicators['momentum_signal'] = 0.0
-        indicators['rsi'] = 50.0  # Neutral RSI
-        indicators['rsi_signal'] = 0.0  # Neutral signal
+        indicators['rsi'] = 50.0
+        indicators['rsi_signal'] = 0.0
     
-    # Calculate Price History-based Metrics from scratch if needed
     if has_price_history and len(technical_data['price_history']) > 5:
         price_data = technical_data['price_history']
         close_prices = []
@@ -731,56 +653,43 @@ def extract_indicators_from_technical_data(technical_data):
                 if vol_val is not None:
                     volumes.append(vol_val)
         
-        # Calculate simple moving averages if not available from API
         if not has_sma_data and len(close_prices) >= 200:
-            # Calculate 50-day SMA
             if len(close_prices) >= 50:
                 sma_50 = sum(close_prices[-50:]) / 50
                 indicators['sma_50'] = sma_50
             
-            # Calculate 200-day SMA
             if len(close_prices) >= 200:
                 sma_200 = sum(close_prices[-200:]) / 200
                 indicators['sma_200'] = sma_200
                 
-                # Calculate SMA cross signal
                 if 'sma_50' in indicators:
                     indicators['sma_cross_signal'] = 1.0 if indicators['sma_50'] > sma_200 else -1.0
                     
-                # Calculate price relative to 200-day SMA
                 indicators['price_rel_sma_200'] = (current_price / sma_200) - 1.0
-                indicators['price_rel_sma'] = indicators['price_rel_sma_200']  # Alias
+                indicators['price_rel_sma'] = indicators['price_rel_sma_200']
         
-        # Calculate EMAs if not available from API
         if not has_ema_data and len(close_prices) >= 26:
-            # Simple EMA calculation
             def calculate_ema(prices, period):
                 multiplier = 2 / (period + 1)
-                ema = sum(prices[:period]) / period  # Start with SMA
+                ema = sum(prices[:period]) / period
                 for price in prices[period:]:
                     ema = (price - ema) * multiplier + ema
                 return ema
             
-            # Calculate 12-day EMA
             if len(close_prices) >= 12:
                 ema_12 = calculate_ema(close_prices, 12)
                 indicators['ema_12'] = ema_12
             
-            # Calculate 26-day EMA
             if len(close_prices) >= 26:
                 ema_26 = calculate_ema(close_prices, 26)
                 indicators['ema_26'] = ema_26
                 
-                # Calculate EMA cross signal
                 if 'ema_12' in indicators:
                     indicators['ema_cross_signal'] = 1.0 if indicators['ema_12'] > ema_26 else -1.0
                     
-                # Calculate price relative to 26-day EMA
                 indicators['price_rel_ema'] = (current_price / ema_26) - 1.0
         
-        # Calculate basic volatility metrics if not available
         if len(close_prices) >= 14 and len(high_prices) >= 14 and len(low_prices) >= 14:
-            # Calculate Average True Range (ATR)
             tr_values = []
             for i in range(1, min(len(close_prices), len(high_prices), len(low_prices))):
                 high = high_prices[i]
@@ -792,14 +701,10 @@ def extract_indicators_from_technical_data(technical_data):
             if tr_values:
                 atr = sum(tr_values[-14:]) / 14
                 indicators['atr'] = atr
-                
-                # ATR as percentage of price
                 if current_price > 0:
                     indicators['atr_percent'] = atr / current_price
         
-        # Calculate volume-based metrics
         if volumes:
-            # Calculate recent volume trend
             if len(volumes) >= 10:
                 recent_vol = sum(volumes[-5:]) / 5
                 prev_vol = sum(volumes[-10:-5]) / 5
@@ -811,7 +716,6 @@ def extract_indicators_from_technical_data(technical_data):
             else:
                 indicators['volume_trend'] = 0.0
             
-            # Calculate On Balance Volume (OBV) trend
             if len(close_prices) >= 10 and len(volumes) >= 10:
                 obv = 0
                 prev_obv = 0
@@ -822,7 +726,6 @@ def extract_indicators_from_technical_data(technical_data):
                         obv -= volumes[i]
                 
                 if len(close_prices) >= 10:
-                    # Calculate OBV 10 periods ago
                     for i in range(1, min(len(close_prices), len(volumes)) - 9):
                         if close_prices[i] > close_prices[i-1]:
                             prev_obv += volumes[i]
@@ -831,14 +734,12 @@ def extract_indicators_from_technical_data(technical_data):
                 
                 indicators['obv'] = obv
                 
-                # OBV trend
                 if prev_obv != 0:
                     obv_change = (obv - prev_obv) / abs(prev_obv)
                     indicators['obv_trend'] = min(1.0, max(-1.0, obv_change * 5))
                 else:
                     indicators['obv_trend'] = 0.0 if obv == 0 else (1.0 if obv > 0 else -1.0)
     
-    # Extract SMA data from API if available
     if has_sma_data:
         sma_50 = None
         sma_200 = None
@@ -853,33 +754,24 @@ def extract_indicators_from_technical_data(technical_data):
             if sma_200 is not None:
                 indicators['sma_200'] = sma_200
         
-        # Calculate SMA-based signals
         if sma_50 is not None and sma_200 is not None:
-            # Golden Cross (50-day SMA crosses above 200-day SMA)
             indicators['sma_cross_signal'] = 1.0 if sma_50 > sma_200 else -1.0
         
         if current_price is not None:
             if sma_50 is not None:
-                # Price relative to 50-day SMA
                 indicators['price_rel_sma_50'] = (current_price / sma_50) - 1.0
-            
             if sma_200 is not None:
-                # Price relative to 200-day SMA
                 indicators['price_rel_sma_200'] = (current_price / sma_200) - 1.0
-                # Price relative to SMA (combined)
                 indicators['price_rel_sma'] = indicators['price_rel_sma_200']
     
-    # Ensure we have an SMA cross signal even if direct calculation isn't possible
     if 'sma_cross_signal' not in indicators:
-        # Derive from other signals if possible
         if 'price_rel_sma_200' in indicators:
             indicators['sma_cross_signal'] = 1.0 if indicators['price_rel_sma_200'] > 0 else -1.0
         elif 'price_performance_3m' in indicators:
             indicators['sma_cross_signal'] = 1.0 if indicators['price_performance_3m'] > 0 else -1.0
         else:
-            indicators['sma_cross_signal'] = 0.0  # Neutral
+            indicators['sma_cross_signal'] = 0.0
     
-    # Extract EMA indicators
     if has_ema_data:
         ema_12 = None
         ema_26 = None
@@ -894,375 +786,134 @@ def extract_indicators_from_technical_data(technical_data):
             if ema_26 is not None:
                 indicators['ema_26'] = ema_26
         
-        # Calculate EMA cross signal if both are available
         if ema_12 is not None and ema_26 is not None:
             indicators['ema_cross_signal'] = 1.0 if ema_12 > ema_26 else -1.0
         
-        # Price relative to EMA if available
         if current_price is not None and ema_26 is not None:
             indicators['price_rel_ema'] = (current_price / ema_26) - 1.0
     
-    # Ensure we have an EMA cross signal even if direct calculation isn't possible
     if 'ema_cross_signal' not in indicators:
-        # Derive from other signals if possible
         if 'price_rel_ema' in indicators:
             indicators['ema_cross_signal'] = 1.0 if indicators['price_rel_ema'] > 0 else -1.0
         elif 'sma_cross_signal' in indicators:
-            indicators['ema_cross_signal'] = indicators['sma_cross_signal']  # Use SMA as proxy
+            indicators['ema_cross_signal'] = indicators['sma_cross_signal']
         elif 'price_performance_1m' in indicators:
             indicators['ema_cross_signal'] = 1.0 if indicators['price_performance_1m'] > 0 else -1.0
         else:
-            indicators['ema_cross_signal'] = 0.0  # Neutral
+            indicators['ema_cross_signal'] = 0.0
     
-    # Extract MACD indicators
     if has_macd_data and technical_data.get('macd') and len(technical_data['macd']) > 0:
         macd_data = technical_data['macd'][-1]
-        
         macd_line = extract_value(getattr(macd_data, 'macd', None))
         macd_signal = extract_value(getattr(macd_data, 'signal', None))
         macd_hist = extract_value(getattr(macd_data, 'histogram', None))
-        
         if macd_line is not None:
             indicators['macd_line'] = macd_line
-        
         if macd_signal is not None:
             indicators['macd_signal_line'] = macd_signal
-        
         if macd_hist is not None:
             indicators['macd_hist'] = macd_hist
-        
-        # Calculate MACD signal if both line and signal are available
         if macd_line is not None and macd_signal is not None:
             indicators['macd_signal'] = 1.0 if macd_line > macd_signal else -1.0
-    
-    # Ensure we have a MACD signal even if direct calculation isn't possible
     if 'macd_signal' not in indicators:
-        # Derive from other signals if possible
         if 'ema_cross_signal' in indicators:
-            indicators['macd_signal'] = indicators['ema_cross_signal']  # Use EMA cross as proxy
+            indicators['macd_signal'] = indicators['ema_cross_signal']
         elif 'sma_cross_signal' in indicators:
-            indicators['macd_signal'] = indicators['sma_cross_signal']  # Use SMA as proxy
+            indicators['macd_signal'] = indicators['sma_cross_signal']
         elif 'price_performance_1m' in indicators and 'price_performance_3m' in indicators:
-            # MACD-like logic: short-term vs longer-term momentum
             indicators['macd_signal'] = 1.0 if indicators['price_performance_1m'] > indicators['price_performance_3m'] else -1.0
         else:
-            indicators['macd_signal'] = 0.0  # Neutral
-    
-    # Extract RSI data
+            indicators['macd_signal'] = 0.0
     if has_rsi_data and technical_data.get('rsi') and len(technical_data['rsi']) > 0:
         rsi_value = extract_value(technical_data['rsi'][-1])
-        
         if rsi_value is not None:
             indicators['rsi'] = rsi_value
-            
-            # Calculate RSI signal (scaled from -1 to 1)
             if rsi_value >= 70:
-                indicators['rsi_signal'] = -1.0  # Overbought
+                indicators['rsi_signal'] = -1.0
             elif rsi_value <= 30:
-                indicators['rsi_signal'] = 1.0   # Oversold
+                indicators['rsi_signal'] = 1.0
             else:
-                indicators['rsi_signal'] = (50 - rsi_value) / 20  # Linear scale between
-    
-    # Ensure we have an RSI signal even if RSI isn't calculated directly
+                indicators['rsi_signal'] = (50 - rsi_value) / 20
     if 'rsi_signal' not in indicators and 'rsi' in indicators:
         rsi_value = indicators['rsi']
-        # Calculate RSI signal (scaled from -1 to 1)
         if rsi_value >= 70:
-            indicators['rsi_signal'] = -1.0  # Overbought
+            indicators['rsi_signal'] = -1.0
         elif rsi_value <= 30:
-            indicators['rsi_signal'] = 1.0   # Oversold
+            indicators['rsi_signal'] = 1.0
         else:
-            indicators['rsi_signal'] = (50 - rsi_value) / 20  # Linear scale between
+            indicators['rsi_signal'] = (50 - rsi_value) / 20
     elif 'rsi_signal' not in indicators:
-        # Fallback to momentum from price performance
         if 'price_performance_1m' in indicators:
             perf_1m = indicators['price_performance_1m']
             if perf_1m > 0.1:
-                indicators['rsi_signal'] = -0.8  # Likely overbought
+                indicators['rsi_signal'] = -0.8
             elif perf_1m < -0.1:
-                indicators['rsi_signal'] = 0.8   # Likely oversold
+                indicators['rsi_signal'] = 0.8
             else:
-                indicators['rsi_signal'] = -perf_1m * 8  # Scale linearly
+                indicators['rsi_signal'] = -perf_1m * 8
         else:
-            indicators['rsi_signal'] = 0.0  # Neutral
-    
-    # Extract Stochastic Oscillator
+            indicators['rsi_signal'] = 0.0
     if has_stoch_data and technical_data.get('stoch') and len(technical_data['stoch']) > 0:
         stoch_data = technical_data['stoch'][-1]
-        
         stoch_k = extract_value(getattr(stoch_data, 'k', None))
         stoch_d = extract_value(getattr(stoch_data, 'd', None))
-        
         if stoch_k is not None:
             indicators['stoch_k'] = stoch_k
-        
         if stoch_d is not None:
             indicators['stoch_d'] = stoch_d
-        
-        # Calculate Stochastic signal if available
         if stoch_k is not None and stoch_d is not None:
-            # Typical interpretation: overbought above 80, oversold below 20
             if stoch_d >= 80:
-                indicators['stoch_signal'] = -1.0  # Overbought
+                indicators['stoch_signal'] = -1.0
             elif stoch_d <= 20:
-                indicators['stoch_signal'] = 1.0   # Oversold
+                indicators['stoch_signal'] = 1.0
             else:
-                indicators['stoch_signal'] = (50 - stoch_d) / 30  # Scale to -1 to 1
-    
-    # Ensure we have a Stochastic signal even if not calculated directly
+                indicators['stoch_signal'] = (50 - stoch_d) / 30
     if 'stoch_signal' not in indicators:
-        # Use RSI as a proxy if available
         if 'rsi_signal' in indicators:
             indicators['stoch_signal'] = indicators['rsi_signal']
         else:
-            # Derive from price performance
             if 'price_performance_1m' in indicators:
                 perf_1m = indicators['price_performance_1m']
                 if perf_1m > 0.08:
-                    indicators['stoch_signal'] = -0.7  # Likely overbought
+                    indicators['stoch_signal'] = -0.7
                 elif perf_1m < -0.08:
-                    indicators['stoch_signal'] = 0.7   # Likely oversold
+                    indicators['stoch_signal'] = 0.7
                 else:
-                    indicators['stoch_signal'] = -perf_1m * 8  # Scale linearly
+                    indicators['stoch_signal'] = -perf_1m * 8
             else:
-                indicators['stoch_signal'] = 0.0  # Neutral
-    
-    # Extract Bollinger Bands if available
+                indicators['stoch_signal'] = 0.0
     if technical_data.get('bbands') and len(technical_data['bbands']) > 0:
         bb_data = technical_data['bbands'][-1]
-        
         bb_upper = extract_value(getattr(bb_data, 'upper', None))
         bb_middle = extract_value(getattr(bb_data, 'middle', None))
         bb_lower = extract_value(getattr(bb_data, 'lower', None))
-        
         if bb_upper is not None:
             indicators['bb_upper'] = bb_upper
-        
         if bb_middle is not None:
             indicators['bb_middle'] = bb_middle
-        
         if bb_lower is not None:
             indicators['bb_lower'] = bb_lower
-        
-        # Calculate BB position and width if all components are available
         if current_price is not None and bb_upper is not None and bb_lower is not None:
             bb_range = bb_upper - bb_lower
-            
             if bb_range > 0:
                 position = (current_price - bb_lower) / bb_range
-                # Scale to -1 to 1 around the middle
                 indicators['bb_position'] = (position - 0.5) * 2
-                
-                # Calculate BB width as percentage of middle
                 if bb_middle is not None and bb_middle > 0:
                     indicators['bb_width'] = bb_range / bb_middle
-    
-    # Ensure we have Bollinger Band metrics even if not calculated directly
     if 'bb_position' not in indicators:
-        # Use price relative to SMA as a proxy
         if 'price_rel_sma' in indicators:
-            # Convert price relative to SMA to a -1 to 1 scale
             rel_sma = indicators['price_rel_sma']
             indicators['bb_position'] = min(1.0, max(-1.0, rel_sma * 5))
         elif 'price_performance_1m' in indicators:
-            # Use recent performance as a rough proxy
             indicators['bb_position'] = min(1.0, max(-1.0, indicators['price_performance_1m'] * 10))
         else:
-            indicators['bb_position'] = 0.0  # Neutral
-    
+            indicators['bb_position'] = 0.0
     if 'bb_width' not in indicators:
-        # Default to a reasonable value based on ATR if available
         if 'atr_percent' in indicators:
-            indicators['bb_width'] = indicators['atr_percent'] * 4  # Typical BB width is ~4x ATR
+            indicators['bb_width'] = indicators['atr_percent'] * 4
         else:
-            indicators['bb_width'] = 0.05  # 5% default
-    
-    # Extract ADX if available
-    if technical_data.get('adx') and len(technical_data['adx']) > 0:
-        adx_data = technical_data['adx'][-1]
-        adx_value = extract_value(getattr(adx_data, 'adx', None))
-        
-        if adx_value is not None:
-            indicators['adx'] = adx_value
-            
-            # Calculate ADX trend strength
-            if adx_value >= 25:
-                # Strong trend (ADX > 25)
-                trend_strength = 0.25 + (adx_value - 25) * 0.75 / 75
-                indicators['adx_trend'] = min(1.0, trend_strength)
-            else:
-                # Weak trend (ADX < 25)
-                indicators['adx_trend'] = adx_value * 0.25 / 25
-    
-    # Ensure we have an ADX trend even if not calculated directly
-    if 'adx_trend' not in indicators:
-        # Use price performance consistency as a proxy
-        if 'price_performance_1m' in indicators and 'price_performance_3m' in indicators:
-            perf_1m = indicators['price_performance_1m']
-            perf_3m = indicators['price_performance_3m']
-            
-            # If both are in the same direction, trend is stronger
-            if (perf_1m > 0 and perf_3m > 0) or (perf_1m < 0 and perf_3m < 0):
-                # Strength based on magnitude
-                indicators['adx_trend'] = min(1.0, (abs(perf_1m) + abs(perf_3m)) * 5)
-            else:
-                # Opposing directions indicate weak trend
-                indicators['adx_trend'] = min(0.25, (abs(perf_3m) * 2))
-        else:
-            indicators['adx_trend'] = 0.3  # Moderate default
-    
-    # Extract ATR if available
-    if technical_data.get('atr') and len(technical_data['atr']) > 0:
-        atr_value = extract_value(technical_data['atr'][-1])
-        
-        if atr_value is not None:
-            indicators['atr'] = atr_value
-            
-            # Calculate ATR percentage if current price is available
-            if current_price is not None and current_price > 0:
-                indicators['atr_percent'] = atr_value / current_price
-    
-    # Ensure we have ATR percentage even if not calculated directly
-    if 'atr_percent' not in indicators:
-        # Derive from price volatility or use a default
-        if has_price_history and len(technical_data['price_history']) > 10:
-            # Calculate simple volatility from recent price movements
-            price_history = technical_data['price_history']
-            recent_prices = []
-            for i in range(min(10, len(price_history))):
-                if hasattr(price_history[-i-1], 'close'):
-                    close_val = extract_value(price_history[-i-1].close)
-                    if close_val is not None:
-                        recent_prices.append(close_val)
-            
-            if recent_prices and len(recent_prices) > 1:
-                # Calculate daily changes
-                daily_changes = []
-                for i in range(1, len(recent_prices)):
-                    if recent_prices[i-1] > 0:
-                        daily_change = abs(recent_prices[i] - recent_prices[i-1]) / recent_prices[i-1]
-                        daily_changes.append(daily_change)
-                
-                if daily_changes:
-                    # Use average daily change as ATR proxy
-                    indicators['atr_percent'] = sum(daily_changes) / len(daily_changes)
-                else:
-                    indicators['atr_percent'] = 0.02  # 2% default
-            else:
-                indicators['atr_percent'] = 0.02  # 2% default
-        else:
-            indicators['atr_percent'] = 0.02  # 2% default
-    
-    # Extract OBV if available
-    if technical_data.get('obv') and len(technical_data['obv']) > 1:
-        obv_current = extract_value(technical_data['obv'][-1])
-        obv_prev = extract_value(technical_data['obv'][-2])
-        
-        if obv_current is not None:
-            indicators['obv'] = obv_current
-            
-            # Calculate OBV trend if previous value is available
-            if obv_prev is not None:
-                # Simple trend: 1.0 if increasing, -1.0 if decreasing
-                indicators['obv_trend'] = 1.0 if obv_current > obv_prev else -1.0
-                
-                # If more history is available, calculate a more nuanced trend
-                if len(technical_data['obv']) >= 10:
-                    obv_10_periods_ago = extract_value(technical_data['obv'][-10])
-                    
-                    if obv_10_periods_ago is not None and obv_10_periods_ago != 0:
-                        # Calculate rate of change
-                        obv_roc = (obv_current - obv_10_periods_ago) / abs(obv_10_periods_ago)
-                        # Scale to a reasonable range
-                        indicators['obv_trend'] = min(1.0, max(-1.0, obv_roc * 5))
-    
-    # Ensure we have OBV trend even if not calculated directly
-    if 'obv_trend' not in indicators:
-        # Use volume trend as a proxy if available
-        if 'volume_trend' in indicators:
-            # Combine volume trend with price direction
-            vol_trend = indicators['volume_trend']
-            price_direction = 1.0 if indicators.get('price_performance_1m', 0) > 0 else -1.0
-            indicators['obv_trend'] = vol_trend * price_direction
-        # Otherwise use price trend as proxy
-        elif 'price_performance_1m' in indicators:
-            indicators['obv_trend'] = 1.0 if indicators['price_performance_1m'] > 0 else -1.0
-        else:
-            indicators['obv_trend'] = 0.0  # Neutral
-    
-    # Extract Accumulation/Distribution Line if available
-    if technical_data.get('ad') and len(technical_data['ad']) > 1:
-        ad_current = extract_value(technical_data['ad'][-1])
-        ad_prev = extract_value(technical_data['ad'][-2])
-        
-        if ad_current is not None:
-            indicators['ad'] = ad_current
-            
-            # Calculate AD trend if previous value is available
-            if ad_prev is not None:
-                # Simple trend: 1.0 if increasing, -1.0 if decreasing
-                indicators['adl_trend'] = 1.0 if ad_current > ad_prev else -1.0
-                
-                # If more history is available, calculate a more nuanced trend
-                if len(technical_data['ad']) >= 10:
-                    ad_10_periods_ago = extract_value(technical_data['ad'][-10])
-                    
-                    if ad_10_periods_ago is not None and ad_10_periods_ago != 0:
-                        # Calculate rate of change
-                        ad_roc = (ad_current - ad_10_periods_ago) / abs(ad_10_periods_ago)
-                        # Scale to a reasonable range
-                        indicators['adl_trend'] = min(1.0, max(-1.0, ad_roc * 5))
-    
-    # Ensure we have ADL trend even if not calculated directly
-    if 'adl_trend' not in indicators:
-        # Use OBV trend as proxy if available
-        if 'obv_trend' in indicators:
-            indicators['adl_trend'] = indicators['obv_trend']
-        # Otherwise derive from price and volume
-        elif 'volume_trend' in indicators and 'price_performance_1m' in indicators:
-            vol_trend = indicators['volume_trend']
-            price_perf = indicators['price_performance_1m']
-            # ADL increases with volume on up days, decreases with volume on down days
-            indicators['adl_trend'] = vol_trend * (1.0 if price_perf > 0 else -1.0)
-        else:
-            indicators['adl_trend'] = 0.0  # Neutral
-    
-    # Extract VWAP if available
-    if technical_data.get('vwap') and len(technical_data['vwap']) > 0:
-        vwap_value = extract_value(technical_data['vwap'][-1])
-        
-        if vwap_value is not None:
-            indicators['vwap'] = vwap_value
-            
-            # Calculate VWAP position if current price is available
-            if current_price is not None and vwap_value > 0:
-                # Calculate percentage difference
-                vwap_diff = (current_price / vwap_value) - 1.0
-                # Scale to a reasonable range
-                indicators['vwap_position'] = min(1.0, max(-1.0, vwap_diff * 5))
-    
-    # Ensure we have VWAP position even if not calculated directly
-    if 'vwap_position' not in indicators:
-        # Use price relative to SMA as proxy if available
-        if 'price_rel_sma' in indicators:
-            indicators['vwap_position'] = indicators['price_rel_sma']
-        # Or use recent performance as a rough substitute
-        elif 'price_performance_1m' in indicators:
-            indicators['vwap_position'] = min(1.0, max(-1.0, indicators['price_performance_1m'] * 10))
-        else:
-            indicators['vwap_position'] = 0.0  # Neutral
-    
-    # Calculate Keltner Channel width if available data
-    if not indicators.get('keltner_width') and indicators.get('atr_percent'):
-        # Typical Keltner Channel is 2x ATR from middle
-        indicators['keltner_width'] = indicators['atr_percent'] * 4
-    elif not indicators.get('keltner_width'):
-        # Default value
-        indicators['keltner_width'] = 0.05  # 5% default
-    
-    # Calculate Donchian Channel width if not already available
+            indicators['bb_width'] = 0.05
     if not indicators.get('donchian_width') and has_price_history and len(technical_data['price_history']) >= 20:
-        # Extract high and low prices
         highs = []
         lows = []
         for i in range(min(20, len(technical_data['price_history']))):
@@ -1275,119 +926,144 @@ def extract_indicators_from_technical_data(technical_data):
                 low_val = extract_value(p.low)
                 if low_val is not None:
                     lows.append(low_val)
-        
         if highs and lows:
             highest_high = max(highs)
             lowest_low = min(lows)
             if highest_high > 0:
-                # Width as percentage of middle
                 indicators['donchian_width'] = (highest_high - lowest_low) / ((highest_high + lowest_low) / 2)
             else:
-                indicators['donchian_width'] = 0.05  # Default
+                indicators['donchian_width'] = 0.05
         else:
-            indicators['donchian_width'] = 0.05  # Default
+            indicators['donchian_width'] = 0.05
     elif not indicators.get('donchian_width'):
-        # Default value
-        indicators['donchian_width'] = 0.05  # 5% default
+        indicators['donchian_width'] = 0.05
     
-    # Extract volatility cones if available
-    if technical_data.get('cones') and len(technical_data['cones']) > 0:
-        # Complex processing required for cones data
-        # Simplified to a single metric for now
-        indicators['volatility_cones'] = 0.0  # Neutral default
+    # Updated: Extract volatility cones from multiple models
+    if technical_data.get('cones') and isinstance(technical_data['cones'], dict) and technical_data['cones']:
+        cone_values = []
+        for model, result in technical_data['cones'].items():
+            if isinstance(result, list) and len(result) > 0:
+                last_cone = result[-1]
+                upper = get_attribute_value(last_cone, 'upper', None)
+                lower = get_attribute_value(last_cone, 'lower', None)
+                if upper is not None and lower is not None and current_price is not None and current_price != 0:
+                    cone_width = (upper - lower) / current_price
+                    cone_values.append(cone_width)
+                elif isinstance(last_cone, (int, float)):
+                    cone_values.append(last_cone)
+        if cone_values:
+            indicators['volatility_cones'] = (sum(cone_values) / len(cone_values)) * 5
+        else:
+            indicators['volatility_cones'] = indicators.get('atr_percent', 0.02) * 5
     else:
-        indicators['volatility_cones'] = indicators.get('atr_percent', 0.02) * 5  # Derive from ATR
+        indicators['volatility_cones'] = indicators.get('atr_percent', 0.02) * 5
     
-    # Calculate price target upside if available
-    if technical_data.get('price_target') and len(technical_data['price_target']) > 0:
-        target_data = technical_data['price_target'][0]
-        consensus_target = extract_value(getattr(target_data, 'target_consensus', None))
-        
-        if consensus_target is not None and current_price > 0:
-            indicators['price_target_upside'] = (consensus_target / current_price) - 1.0
-    
-    # Ensure we have price target upside even if not available
-    if 'price_target_upside' not in indicators:
-        # Default to small positive value for neutral assessment
-        indicators['price_target_upside'] = 0.05  # 5% default upside
-    
-    # Ichimoku Cloud signal if available
-    if technical_data.get('ichimoku') and len(technical_data['ichimoku']) > 0:
-        # Complex processing required
-        # Simplified to cloud position for now
-        indicators['ichimoku_signal'] = 0.0  # Neutral default
-    
-    # Ensure we have Ichimoku signal
-    if 'ichimoku_signal' not in indicators:
-        # Use combination of trend signals as proxy
-        if 'sma_cross_signal' in indicators and 'ema_cross_signal' in indicators:
-            indicators['ichimoku_signal'] = (indicators['sma_cross_signal'] + indicators['ema_cross_signal']) / 2
-        else:
-            indicators['ichimoku_signal'] = indicators.get('sma_cross_signal', 0.0)
-    
-    # Ensure we have CCI signal
-    if 'cci_signal' not in indicators:
-        # Use RSI as proxy
-        if 'rsi_signal' in indicators:
-            indicators['cci_signal'] = indicators['rsi_signal']
-        # Or derive from price momentum
-        elif 'price_performance_1m' in indicators:
-            perf = indicators['price_performance_1m']
-            if perf > 0.1:
-                indicators['cci_signal'] = -0.8  # Likely overbought
-            elif perf < -0.1:
-                indicators['cci_signal'] = 0.8   # Likely oversold
+    if technical_data.get('adx') and len(technical_data['adx']) > 0:
+        adx_data = technical_data['adx'][-1]
+        adx_value = extract_value(getattr(adx_data, 'adx', None))
+        if adx_value is not None:
+            indicators['adx'] = adx_value
+            if adx_value >= 25:
+                trend_strength = 0.25 + (adx_value - 25) * 0.75 / 75
+                indicators['adx_trend'] = min(1.0, trend_strength)
             else:
-                indicators['cci_signal'] = -perf * 8  # Scale
+                indicators['adx_trend'] = adx_value * 0.25 / 25
+    if 'adx_trend' not in indicators:
+        if 'price_performance_1m' in indicators and 'price_performance_3m' in indicators:
+            perf_1m = indicators['price_performance_1m']
+            perf_3m = indicators['price_performance_3m']
+            if (perf_1m > 0 and perf_3m > 0) or (perf_1m < 0 and perf_3m < 0):
+                indicators['adx_trend'] = min(1.0, (abs(perf_1m) + abs(perf_3m)) * 5)
+            else:
+                indicators['adx_trend'] = min(0.25, (abs(perf_3m) * 2))
         else:
-            indicators['cci_signal'] = 0.0  # Neutral
-    
-    # Ensure we have Clenow momentum and Fisher transform
-    if 'clenow_momentum' not in indicators:
-        # Derive from price performance
-        if 'price_performance_3m' in indicators:
-            # Scale and adjust for volatility
-            perf = indicators['price_performance_3m']
-            vol_factor = 1.0
-            if 'atr_percent' in indicators:
-                vol_factor = min(2.0, 0.02 / max(0.005, indicators['atr_percent']))
-            indicators['clenow_momentum'] = perf * vol_factor
+            indicators['adx_trend'] = 0.3
+    if technical_data.get('atr') and len(technical_data['atr']) > 0:
+        atr_value = extract_value(technical_data['atr'][-1])
+        if atr_value is not None:
+            indicators['atr'] = atr_value
+            if current_price is not None and current_price > 0:
+                indicators['atr_percent'] = atr_value / current_price
+    if 'atr_percent' not in indicators:
+        if has_price_history and len(technical_data['price_history']) > 10:
+            price_history = technical_data['price_history']
+            recent_prices = []
+            for i in range(min(10, len(price_history))):
+                if hasattr(price_history[-i-1], 'close'):
+                    close_val = extract_value(price_history[-i-1].close)
+                    if close_val is not None:
+                        recent_prices.append(close_val)
+            if recent_prices and len(recent_prices) > 1:
+                daily_changes = []
+                for i in range(1, len(recent_prices)):
+                    if recent_prices[i-1] > 0:
+                        daily_change = abs(recent_prices[i] - recent_prices[i-1]) / recent_prices[i-1]
+                        daily_changes.append(daily_change)
+                if daily_changes:
+                    indicators['atr_percent'] = sum(daily_changes) / len(daily_changes)
+                else:
+                    indicators['atr_percent'] = 0.02
+            else:
+                indicators['atr_percent'] = 0.02
         else:
-            indicators['clenow_momentum'] = 0.0  # Neutral
-    
-    if 'fisher_transform' not in indicators:
-        # Approximate from RSI
-        if 'rsi' in indicators:
-            rsi = indicators['rsi']
-            # Convert RSI (0-100) to range (-1 to 1) then approximate Fisher transform
-            x = (rsi / 100 * 2) - 1
-            # Simplified Fisher transform approximation
-            indicators['fisher_transform'] = x * (1.0 + (x**2) / 6)
+            indicators['atr_percent'] = 0.02
+    if technical_data.get('obv') and len(technical_data['obv']) > 1:
+        obv_current = extract_value(technical_data['obv'][-1])
+        obv_prev = extract_value(technical_data['obv'][-2])
+        if obv_current is not None:
+            indicators['obv'] = obv_current
+            if obv_prev is not None:
+                obv_change = (obv_current - obv_prev) / abs(obv_prev)
+                indicators['obv_trend'] = min(1.0, max(-1.0, obv_change * 5))
+    if 'obv_trend' not in indicators:
+        if 'volume_trend' in indicators:
+            vol_trend = indicators['volume_trend']
+            price_direction = 1.0 if indicators.get('price_performance_1m', 0) > 0 else -1.0
+            indicators['obv_trend'] = vol_trend * price_direction
+        elif 'price_performance_1m' in indicators:
+            indicators['obv_trend'] = 1.0 if indicators['price_performance_1m'] > 0 else -1.0
         else:
-            indicators['fisher_transform'] = 0.0  # Neutral
-    
-    # Ensure trend signal is available
-    if 'trend_signal' not in indicators:
-        # Derive from available trend indicators
-        trend_indicators = [
-            indicators.get('sma_cross_signal', 0),
-            indicators.get('ema_cross_signal', 0),
-            indicators.get('macd_signal', 0),
-            indicators.get('price_rel_sma', 0)
-        ]
-        trend_indicators = [t for t in trend_indicators if t is not None]
-        if trend_indicators:
-            # Average available trend indicators
-            trend_signal = sum(trend_indicators) / len(trend_indicators)
-            # Discretize to clear trend signal
-            indicators['trend_signal'] = 1.0 if trend_signal > 0 else -1.0
-        elif 'price_performance_3m' in indicators:
-            # Use medium-term performance as fallback
-            indicators['trend_signal'] = 1.0 if indicators['price_performance_3m'] > 0 else -1.0
+            indicators['obv_trend'] = 0.0
+    if technical_data.get('ad') and len(technical_data['ad']) > 1:
+        ad_current = extract_value(technical_data['ad'][-1])
+        ad_prev = extract_value(technical_data['ad'][-2])
+        if ad_current is not None:
+            indicators['ad'] = ad_current
+            if ad_prev is not None:
+                indicators['adl_trend'] = 1.0 if ad_current > ad_prev else -1.0
+                if len(technical_data['ad']) >= 10:
+                    ad_10_periods_ago = extract_value(technical_data['ad'][-10])
+                    if ad_10_periods_ago is not None and ad_10_periods_ago != 0:
+                        ad_roc = (ad_current - ad_10_periods_ago) / abs(ad_10_periods_ago)
+                        indicators['adl_trend'] = min(1.0, max(-1.0, ad_roc * 5))
+    if 'adl_trend' not in indicators:
+        if 'obv_trend' in indicators:
+            indicators['adl_trend'] = indicators['obv_trend']
+        elif 'volume_trend' in indicators and 'price_performance_1m' in indicators:
+            vol_trend = indicators['volume_trend']
+            price_perf = indicators['price_performance_1m']
+            indicators['adl_trend'] = vol_trend * (1.0 if price_perf > 0 else -1.0)
         else:
-            indicators['trend_signal'] = 0.0  # Neutral
+            indicators['adl_trend'] = 0.0
+    if technical_data.get('vwap') and len(technical_data['vwap']) > 0:
+        vwap_value = extract_value(technical_data['vwap'][-1])
+        if vwap_value is not None:
+            indicators['vwap'] = vwap_value
+            if current_price is not None and vwap_value > 0:
+                vwap_diff = (current_price / vwap_value) - 1.0
+                indicators['vwap_position'] = min(1.0, max(-1.0, vwap_diff * 5))
+    if 'vwap_position' not in indicators:
+        if 'price_rel_sma' in indicators:
+            indicators['vwap_position'] = indicators['price_rel_sma']
+        elif 'price_performance_1m' in indicators:
+            indicators['vwap_position'] = min(1.0, max(-1.0, indicators['price_performance_1m'] * 10))
+        else:
+            indicators['vwap_position'] = 0.0
+    if not indicators.get('keltner_width') and indicators.get('atr_percent'):
+        indicators['keltner_width'] = indicators['atr_percent'] * 4
+    elif not indicators.get('keltner_width'):
+        indicators['keltner_width'] = 0.05
     
-    # Ensure all required indicators are defined (never return null values)
     required_indicators = [
         'sma_cross_signal', 'ema_cross_signal', 'price_rel_sma', 'price_rel_ema',
         'adx_trend', 'ichimoku_signal', 'macd_signal', 'bb_position',
@@ -1398,32 +1074,56 @@ def extract_indicators_from_technical_data(technical_data):
         'obv_trend', 'adl_trend', 'adosc_signal', 'vwap_position', 'volume_trend'
     ]
     
-    # Add ADOSC signal if missing
     if 'adosc_signal' not in indicators:
-        # Use ADL trend as proxy
         if 'adl_trend' in indicators:
             indicators['adosc_signal'] = indicators['adl_trend']
         else:
-            indicators['adosc_signal'] = 0.0  # Neutral
+            indicators['adosc_signal'] = 0.0
     
-    # Ensure all indicators have values
     for indicator in required_indicators:
         if indicator not in indicators:
-            # Use thoughtful defaults based on the indicator type
             if indicator in ['sma_cross_signal', 'ema_cross_signal', 'macd_signal', 'trend_signal']:
-                indicators[indicator] = 0.0  # Neutral trend
+                indicators[indicator] = 0.0
             elif indicator in ['rsi_signal', 'stoch_signal', 'cci_signal']:
-                indicators[indicator] = 0.0  # Neutral momentum
+                indicators[indicator] = 0.0
             elif indicator in ['atr_percent', 'bb_width', 'keltner_width', 'volatility_cones', 'donchian_width']:
-                indicators[indicator] = 0.05  # Moderate volatility
+                indicators[indicator] = 0.05
             elif indicator in ['price_target_upside']:
-                indicators[indicator] = 0.05  # Small upside
+                indicators[indicator] = 0.05
             elif indicator in ['obv_trend', 'adl_trend', 'adosc_signal', 'vwap_position', 'volume_trend']:
-                indicators[indicator] = 0.0  # Neutral volume
+                indicators[indicator] = 0.0
             else:
-                indicators[indicator] = 0.0  # Neutral default
+                indicators[indicator] = 0.0
+    
+    # Compute comprehensive entry/exit price estimates
+    if current_price is not None:
+        w_pt = 0.5
+        w_m = 0.3
+        w_t = 0.2
+        combined_factor = (w_pt * indicators.get('price_target_upside', 0) +
+                           w_m * indicators.get('momentum_signal', 0) +
+                           w_t * indicators.get('trend_signal', 0)) / (w_pt + w_m + w_t)
+        expected_price = current_price * (1 + combined_factor)
+        vol_components = []
+        if 'atr_percent' in indicators:
+            vol_components.append(indicators['atr_percent'])
+        if 'bb_width' in indicators:
+            vol_components.append(indicators['bb_width'])
+        if 'volatility_cones' in indicators:
+            vol_components.append(indicators['volatility_cones'] / 5)
+        if vol_components:
+            avg_vol = sum(vol_components) / len(vol_components)
+        else:
+            avg_vol = 0.02
+        vol_range = current_price * avg_vol
+        probable_low = expected_price - vol_range
+        probable_high = expected_price + vol_range
+        indicators['expected_price'] = expected_price
+        indicators['probable_low'] = probable_low
+        indicators['probable_high'] = probable_high
     
     return indicators
+
 
 def normalize_data(data_dict: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str, float]]:
     """
