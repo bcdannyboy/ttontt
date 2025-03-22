@@ -303,7 +303,7 @@ if __name__ == "__main__":
         ) as progress:
             task = progress.add_task("Generating reports...", total=len(results))
             
-            with ThreadPoolExecutor(max_workers=min(10, len(results))) as executor:
+            with ThreadPoolExecutor(max_workers=min(os.cpu_count()*2, len(results))) as executor:
                 future_to_ticker = {
                     executor.submit(generate_stock_report_task, ticker, score, details): ticker 
                     for ticker, score, details in results
@@ -409,9 +409,16 @@ if __name__ == "__main__":
             else:
                 rich_console.print("No quartile analysis available.")
             
-            # Perform technical analysis on the quartile stocks from fundamental analysis
+            # --- Technical Analysis on Fundamental Quartiles ---
             if top_quartile or bottom_quartile:
                 rich_console.print("\n[bold]Technical Analysis on Fundamental Quartiles:[/bold]")
+                
+                # Create a mapping for fundamental group membership
+                fundamental_group = {}
+                for ticker, score, details in top_quartile:
+                    fundamental_group[ticker] = 'top'
+                for ticker, score, details in bottom_quartile:
+                    fundamental_group[ticker] = 'bottom'
                 
                 # Collect all tickers from top and bottom quartiles
                 quartile_tickers = [ticker for ticker, _, _ in top_quartile + bottom_quartile]
@@ -420,13 +427,18 @@ if __name__ == "__main__":
                 tech_results = technicals.screen_stocks(quartile_tickers)
                 
                 if tech_results:
-                    # Add technical results to JSON data
+                    # Attach fundamental group info to technical results
+                    for i, (ticker, score, details) in enumerate(tech_results):
+                        group = fundamental_group.get(ticker, 'unknown')
+                        details['fundamental_group'] = group
+                        tech_results[i] = (ticker, score, details)
+                    
+                    # Generate technical reports
                     tech_json = {
                         "screening_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "stocks": []
                     }
                     
-                    # Generate technical reports
                     rich_console.print("\n[bold]Generating technical reports...[/bold]")
                     tech_reports = []
                     
@@ -440,7 +452,7 @@ if __name__ == "__main__":
                     ) as progress:
                         task = progress.add_task("Generating technical reports...", total=len(tech_results))
                         
-                        with ThreadPoolExecutor(max_workers=min(10, len(tech_results))) as executor:
+                        with ThreadPoolExecutor(max_workers=min(os.cpu_count()*2, len(tech_results))) as executor:
                             tech_future_to_ticker = {
                                 executor.submit(generate_technical_report_task, ticker, score, details): ticker 
                                 for ticker, score, details in tech_results
@@ -460,125 +472,132 @@ if __name__ == "__main__":
                     for tech_data in tech_reports:
                         tech_json["stocks"].append(tech_data)
                     
-                    # Save technical results to JSON
                     tech_output_filename = save_results_to_json(tech_json, filename_prefix="technical_screening")
                     if tech_output_filename:
                         rich_console.print(f"\n[bold green]Technical results saved to {tech_output_filename}[/bold green]")
                     else:
                         rich_console.print("\n[bold red]Error saving technical results to file. Check logs for details.[/bold red]")
                     
-                    # Calculate quartiles for technical scores
-                    tech_scores = [score for _, score, _ in tech_results]
-                    tech_q1 = np.percentile(tech_scores, 25)
-                    tech_q3 = np.percentile(tech_scores, 75)
-                    
-                    tech_top_quartile = [(ticker, score, details) for ticker, score, details in tech_results if score >= tech_q3]
-                    tech_bottom_quartile = [(ticker, score, details) for ticker, score, details in tech_results if score <= tech_q1]
-                    
-                    tech_top_quartile.sort(key=lambda x: x[1], reverse=True)
-                    tech_bottom_quartile.sort(key=lambda x: x[1])
-                    
-                    # Display technical quartiles
-                    rich_console.print("\n[bold]Technical Analysis Quartiles:[/bold]")
-                    
                     # Create mapping for fast signal and warning lookup
                     tech_reports_map = {r["ticker"]: r for r in tech_reports}
                     
-                    if tech_top_quartile:
-                        tech_categories = list(tech_top_quartile[0][2]['category_scores'].keys())
-                        # Create table for top technical quartile
-                        table_tech_top = Table(title="Top Technical Quartile Stocks")
-                        table_tech_top.add_column("Ticker", style="cyan")
-                        table_tech_top.add_column("Score", justify="right", style="green")
+                    # Split technical results by fundamental group
+                    tech_results_top = [item for item in tech_results if item[2].get('fundamental_group') == 'top']
+                    tech_results_bottom = [item for item in tech_results if item[2].get('fundamental_group') == 'bottom']
+                    
+                    # Process technical quartiles for top fundamental group
+                    if tech_results_top:
+                        tech_top_scores = [score for _, score, _ in tech_results_top]
+                        tech_top_q1 = np.percentile(tech_top_scores, 25)
+                        tech_top_q3 = np.percentile(tech_top_scores, 75)
+                        tech_top_top_quartile = [(ticker, score, details) for ticker, score, details in tech_results_top if score >= tech_top_q3]
+                        tech_top_bottom_quartile = [(ticker, score, details) for ticker, score, details in tech_results_top if score <= tech_top_q1]
+                        tech_top_top_quartile.sort(key=lambda x: x[1], reverse=True)
+                        tech_top_bottom_quartile.sort(key=lambda x: x[1])
                         
-                        for cat in tech_categories:
-                            table_tech_top.add_column(cat.title(), justify="right")
+                        rich_console.print("\n[bold]Technical Analysis for Top Fundamental Stocks:[/bold]")
+                        tech_categories = list(tech_results_top[0][2]['category_scores'].keys())
                         
-                        table_tech_top.add_column("Signals", style="green")
-                        table_tech_top.add_column("Warnings", style="red")
-                        
-                        for ticker, score, details in tech_top_quartile:
-                            # Get report data for signals and warnings
-                            report_data = tech_reports_map.get(ticker, {})
-                            
-                            row = [ticker, f"{score:.8f}"]
+                        if tech_top_top_quartile:
+                            table_tech_top_top = Table(title="Top Technical Quartile (Top Fundamentals)")
+                            table_tech_top_top.add_column("Ticker", style="cyan")
+                            table_tech_top_top.add_column("Score", justify="right", style="green")
                             for cat in tech_categories:
-                                cat_score = details['category_scores'].get(cat, 0)
-                                row.append(f"{cat_score:.8f}")
+                                table_tech_top_top.add_column(cat.title(), justify="right")
+                            table_tech_top_top.add_column("Signals", style="green")
+                            table_tech_top_top.add_column("Warnings", style="red")
                             
-                            signals = ", ".join(report_data.get("signals", [])[:2])  # Show at most 2 signals
-                            warnings = ", ".join(report_data.get("warnings", [])[:2])  # Show at most 2 warnings
-                            
-                            row.append(signals)
-                            row.append(warnings)
-                            
-                            table_tech_top.add_row(*row)
-                        
-                        if tech_bottom_quartile:
-                            # Create table for bottom technical quartile
-                            table_tech_bottom = Table(title="Bottom Technical Quartile Stocks")
-                            table_tech_bottom.add_column("Ticker", style="cyan")
-                            table_tech_bottom.add_column("Score", justify="right", style="green")
-                            
-                            for cat in tech_categories:
-                                table_tech_bottom.add_column(cat.title(), justify="right")
-                            
-                            table_tech_bottom.add_column("Signals", style="green")
-                            table_tech_bottom.add_column("Warnings", style="red")
-                            
-                            for ticker, score, details in tech_bottom_quartile:
-                                # Get report data for signals and warnings
+                            for ticker, score, details in tech_top_top_quartile:
                                 report_data = tech_reports_map.get(ticker, {})
-                                
                                 row = [ticker, f"{score:.8f}"]
                                 for cat in tech_categories:
                                     cat_score = details['category_scores'].get(cat, 0)
                                     row.append(f"{cat_score:.8f}")
-                                
-                                signals = ", ".join(report_data.get("signals", [])[:2])  # Show at most 2 signals
-                                warnings = ", ".join(report_data.get("warnings", [])[:2])  # Show at most 2 warnings
-                                
+                                signals = ", ".join(report_data.get("signals", [])[:2])
+                                warnings = ", ".join(report_data.get("warnings", [])[:2])
                                 row.append(signals)
                                 row.append(warnings)
-                                
-                                table_tech_bottom.add_row(*row)
-                            
-                            rich_console.print(Columns([table_tech_top, table_tech_bottom]))
-                        else:
-                            rich_console.print(table_tech_top)
-                    elif tech_bottom_quartile:
-                        tech_categories = list(tech_bottom_quartile[0][2]['category_scores'].keys())
-                        # Create table for bottom technical quartile only
-                        table_tech_bottom = Table(title="Bottom Technical Quartile Stocks")
-                        table_tech_bottom.add_column("Ticker", style="cyan")
-                        table_tech_bottom.add_column("Score", justify="right", style="green")
+                                table_tech_top_top.add_row(*row)
+                            rich_console.print(table_tech_top_top)
                         
-                        for cat in tech_categories:
-                            table_tech_bottom.add_column(cat.title(), justify="right")
-                        
-                        table_tech_bottom.add_column("Signals", style="green")
-                        table_tech_bottom.add_column("Warnings", style="red")
-                        
-                        for ticker, score, details in tech_bottom_quartile:
-                            # Get report data for signals and warnings
-                            report_data = tech_reports_map.get(ticker, {})
-                            
-                            row = [ticker, f"{score:.8f}"]
+                        if tech_top_bottom_quartile:
+                            table_tech_top_bottom = Table(title="Bottom Technical Quartile (Top Fundamentals)")
+                            table_tech_top_bottom.add_column("Ticker", style="cyan")
+                            table_tech_top_bottom.add_column("Score", justify="right", style="green")
                             for cat in tech_categories:
-                                cat_score = details['category_scores'].get(cat, 0)
-                                row.append(f"{cat_score:.8f}")
+                                table_tech_top_bottom.add_column(cat.title(), justify="right")
+                            table_tech_top_bottom.add_column("Signals", style="green")
+                            table_tech_top_bottom.add_column("Warnings", style="red")
                             
-                            signals = ", ".join(report_data.get("signals", [])[:2])  # Show at most 2 signals
-                            warnings = ", ".join(report_data.get("warnings", [])[:2])  # Show at most 2 warnings
-                            
-                            row.append(signals)
-                            row.append(warnings)
-                            
-                            table_tech_bottom.add_row(*row)
+                            for ticker, score, details in tech_top_bottom_quartile:
+                                report_data = tech_reports_map.get(ticker, {})
+                                row = [ticker, f"{score:.8f}"]
+                                for cat in tech_categories:
+                                    cat_score = details['category_scores'].get(cat, 0)
+                                    row.append(f"{cat_score:.8f}")
+                                signals = ", ".join(report_data.get("signals", [])[:2])
+                                warnings = ", ".join(report_data.get("warnings", [])[:2])
+                                row.append(signals)
+                                row.append(warnings)
+                                table_tech_top_bottom.add_row(*row)
+                            rich_console.print(table_tech_top_bottom)
+                    
+                    # Process technical quartiles for bottom fundamental group
+                    if tech_results_bottom:
+                        tech_bottom_scores = [score for _, score, _ in tech_results_bottom]
+                        tech_bottom_q1 = np.percentile(tech_bottom_scores, 25)
+                        tech_bottom_q3 = np.percentile(tech_bottom_scores, 75)
+                        tech_bottom_top_quartile = [(ticker, score, details) for ticker, score, details in tech_results_bottom if score >= tech_bottom_q3]
+                        tech_bottom_bottom_quartile = [(ticker, score, details) for ticker, score, details in tech_results_bottom if score <= tech_bottom_q1]
+                        tech_bottom_top_quartile.sort(key=lambda x: x[1], reverse=True)
+                        tech_bottom_bottom_quartile.sort(key=lambda x: x[1])
                         
-                        rich_console.print(table_tech_bottom)
-                    else:
-                        rich_console.print("No technical quartile analysis available.")
+                        rich_console.print("\n[bold]Technical Analysis for Bottom Fundamental Stocks:[/bold]")
+                        tech_categories = list(tech_results_bottom[0][2]['category_scores'].keys())
+                        
+                        if tech_bottom_top_quartile:
+                            table_tech_bottom_top = Table(title="Top Technical Quartile (Bottom Fundamentals)")
+                            table_tech_bottom_top.add_column("Ticker", style="cyan")
+                            table_tech_bottom_top.add_column("Score", justify="right", style="green")
+                            for cat in tech_categories:
+                                table_tech_bottom_top.add_column(cat.title(), justify="right")
+                            table_tech_bottom_top.add_column("Signals", style="green")
+                            table_tech_bottom_top.add_column("Warnings", style="red")
+                            
+                            for ticker, score, details in tech_bottom_top_quartile:
+                                report_data = tech_reports_map.get(ticker, {})
+                                row = [ticker, f"{score:.8f}"]
+                                for cat in tech_categories:
+                                    cat_score = details['category_scores'].get(cat, 0)
+                                    row.append(f"{cat_score:.8f}")
+                                signals = ", ".join(report_data.get("signals", [])[:2])
+                                warnings = ", ".join(report_data.get("warnings", [])[:2])
+                                row.append(signals)
+                                row.append(warnings)
+                                table_tech_bottom_top.add_row(*row)
+                            rich_console.print(table_tech_bottom_top)
+                        
+                        if tech_bottom_bottom_quartile:
+                            table_tech_bottom_bottom = Table(title="Bottom Technical Quartile (Bottom Fundamentals)")
+                            table_tech_bottom_bottom.add_column("Ticker", style="cyan")
+                            table_tech_bottom_bottom.add_column("Score", justify="right", style="green")
+                            for cat in tech_categories:
+                                table_tech_bottom_bottom.add_column(cat.title(), justify="right")
+                            table_tech_bottom_bottom.add_column("Signals", style="green")
+                            table_tech_bottom_bottom.add_column("Warnings", style="red")
+                            
+                            for ticker, score, details in tech_bottom_bottom_quartile:
+                                report_data = tech_reports_map.get(ticker, {})
+                                row = [ticker, f"{score:.8f}"]
+                                for cat in tech_categories:
+                                    cat_score = details['category_scores'].get(cat, 0)
+                                    row.append(f"{cat_score:.8f}")
+                                signals = ", ".join(report_data.get("signals", [])[:2])
+                                warnings = ", ".join(report_data.get("warnings", [])[:2])
+                                row.append(signals)
+                                row.append(warnings)
+                                table_tech_bottom_bottom.add_row(*row)
+                            rich_console.print(table_tech_bottom_bottom)
                 else:
                     rich_console.print("[bold red]No valid stocks were successfully screened with technical indicators.[/bold red]")
             else:
