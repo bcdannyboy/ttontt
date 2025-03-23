@@ -19,7 +19,7 @@ from src.screener.fundamentals.fundamentals_metrics import (extract_metrics_from
 logger = logging.getLogger(__name__)
 
 # Create a cache directory to speed up repeated analyses
-CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
+CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 def get_metrics_cache_path(ticker):
