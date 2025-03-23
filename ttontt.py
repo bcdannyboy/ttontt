@@ -1,5 +1,8 @@
 import asyncio
+
+import concurrent
 from src.screener import fundamentals, technicals
+from src.simulation import montecarlo 
 import json
 import os
 import sys
@@ -95,6 +98,7 @@ def generate_stock_report_task(ticker, score, details):
             "error": True
         }
 
+
 def generate_technical_report_task(ticker, score, details):
     try:
         report = technicals.generate_stock_report(ticker)
@@ -121,6 +125,342 @@ def generate_technical_report_task(ticker, score, details):
             "warnings": [f"Error generating report: {str(e)}"],
             "report": {"error": str(e)},
             "error": True
+        }
+
+def _format_time_horizon(days: int) -> str:
+    """
+    Format a time horizon in days to a human-readable string.
+    
+    Args:
+        days: Number of days
+        
+    Returns:
+        Formatted string (e.g., "1D", "1W", "1M", etc.)
+    """
+    if days == 1:
+        return "1D"
+    elif days <= 5:
+        return "1W"
+    elif days <= 10:
+        return "2W"
+    elif days <= 21:
+        return "1M"
+    elif days <= 63:
+        return "3M"
+    elif days <= 126:
+        return "6M"
+    elif days <= 252:
+        return "1Y"
+    else:
+        return f"{days}D"
+
+def run_comprehensive_monte_carlo_analysis(tickers, technical_results, max_workers=None):
+    """
+    Run a comprehensive Monte Carlo analysis for the given tickers,
+    integrating with the technical analysis results.
+    
+    Args:
+        tickers (list): List of ticker symbols to analyze
+        technical_results (list): List of (ticker, score, details) tuples from technical analysis
+        max_workers (int): Maximum number of worker threads
+        
+    Returns:
+        dict: Dictionary mapping ticker symbols to their Monte Carlo simulation results
+    """
+    if max_workers is None:
+        max_workers = min(32, os.cpu_count() * 2)
+    
+    # Create a mapping for quick lookup of technical results
+    tech_details = {ticker: (score, details) for ticker, score, details in technical_results}
+    
+    rich_console = Console()
+    mc_reports = []
+    
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=rich_console
+    ) as progress:
+        task = progress.add_task("Generating Monte Carlo simulations...", total=len(tickers))
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_ticker = {}
+            
+            # Submit Monte Carlo simulation tasks
+            for ticker in tickers:
+                if ticker in tech_details:
+                    score, details = tech_details[ticker]
+                    future = executor.submit(generate_monte_carlo_report_task, ticker, score, details)
+                    future_to_ticker[future] = ticker
+                else:
+                    # If no technical details available, continue
+                    logger.warning(f"No technical analysis results for {ticker}. Skipping Monte Carlo simulation.")
+                    continue
+            
+            # Process results as they complete
+            for future in tqdm(concurrent.futures.as_completed(future_to_ticker), 
+                              total=len(future_to_ticker), 
+                              desc="Generating Monte Carlo simulations", 
+                              leave=False):
+                ticker = future_to_ticker[future]
+                try:
+                    mc_report = future.result()
+                    mc_reports.append(mc_report)
+                except Exception as e:
+                    logger.error(f"Error generating Monte Carlo report for {ticker}: {e}")
+                    logger.error(traceback.format_exc())
+                
+                progress.update(task, advance=1)
+    
+    return mc_reports
+
+def create_enhanced_monte_carlo_visualization(technical_results, monte_carlo_results):
+    """
+    Create an enhanced visualization of Monte Carlo simulation results
+    integrated with technical analysis results.
+    
+    Args:
+        technical_results (list): List of (ticker, score, details) tuples from technical analysis
+        monte_carlo_results (list): List of Monte Carlo reports
+        
+    Returns:
+        rich.table.Table: A formatted table for display
+    """
+    # Create a mapping for quick lookup of technical results
+    tech_details = {ticker: (score, details) for ticker, score, details in technical_results}
+    
+    # Create a mapping for quick lookup of Monte Carlo results
+    mc_details = {report["ticker"]: report for report in monte_carlo_results}
+    
+    # Create table for visualization
+    table = Table(title="Technical Analysis with Monte Carlo Simulations")
+    
+    # Add columns
+    table.add_column("Ticker", style="cyan")
+    table.add_column("Tech Score", justify="right", style="green")
+    table.add_column("Current", justify="right", style="yellow")
+    table.add_column("Tech Exp", justify="right", style="yellow")
+    table.add_column("MC Exp", justify="right", style="blue")
+    table.add_column("MC Range", justify="right", style="blue")
+    table.add_column("Prob↑", justify="right", style="magenta")
+    table.add_column("Vol Models", justify="right", style="blue")
+    table.add_column("Best Frame", justify="right", style="blue")
+    table.add_column("Signals", style="green")
+    
+    # Populate the table
+    for ticker, score, details in technical_results:
+        if ticker in mc_details:
+            mc_report = mc_details[ticker]["report"]["monte_carlo"]
+            raw = details.get("raw_indicators", {})
+            
+            # Extract technical indicators
+            current = raw.get("current_price", "N/A")
+            tech_exp = raw.get("expected_price", "N/A")
+            
+            # Extract Monte Carlo indicators
+            mc_exp = mc_report.get("expected_price", "N/A")
+            mc_low = mc_report.get("lower_bound", "N/A")
+            mc_high = mc_report.get("upper_bound", "N/A")
+            mc_range = f"{mc_low:.2f}-{mc_high:.2f}" if isinstance(mc_low, (int, float)) and isinstance(mc_high, (int, float)) else "N/A"
+            mc_prob = mc_report.get("prob_increase", "N/A")
+            
+            # Get volatility model information
+            vol_models = mc_report.get("volatility_models", {})
+            num_models = vol_models.get("num_models", "N/A")
+            best_frame = vol_models.get("best_timeframe", "N/A")
+            
+            # Get signals
+            signals = ", ".join(mc_details[ticker].get("signals", [])[:2])
+            
+            # Add row
+            table.add_row(
+                ticker,
+                f"{score:.4f}",
+                f"{current:.2f}" if isinstance(current, (int, float)) else str(current),
+                f"{tech_exp:.2f}" if isinstance(tech_exp, (int, float)) else str(tech_exp),
+                f"{mc_exp:.2f}" if isinstance(mc_exp, (int, float)) else str(mc_exp),
+                mc_range,
+                f"{mc_prob:.1f}%" if isinstance(mc_prob, (int, float)) else str(mc_prob),
+                str(num_models),
+                str(best_frame),
+                signals
+            )
+    
+    return table
+
+def generate_monte_carlo_report_task(ticker: str, score: float, details: dict) -> dict:
+    """
+    Generate a Monte Carlo simulation report for a ticker.
+    
+    Args:
+        ticker (str): The stock ticker symbol.
+        score (float): The technical score.
+        details (dict): Details from technical analysis.
+        
+    Returns:
+        dict: Technical report enhanced with Monte Carlo data.
+    """
+    try:
+        # Import the Monte Carlo simulator class
+        from src.simulation.montecarlo import MonteCarloSimulator
+        import numpy as np
+        import asyncio
+        import traceback
+
+        # Initialize simulator with multiple volatility models
+        simulator = MonteCarloSimulator(
+            ticker=ticker,
+            num_simulations=1000,
+            time_horizons=[1, 5, 10, 21, 63, 126, 252],  # 1D, 1W, 2W, 1M, 3M, 6M, 1Y
+            use_heston=True,
+            use_multiple_volatility_models=True  # Use all volatility models
+        )
+        
+        # Run calibration
+        calibration_success = False
+        try:
+            # Calibrate the model parameters
+            calibration_success = asyncio.run(simulator.calibrate_model_parameters())
+            
+            if not calibration_success:
+                logger.warning(f"Failed to calibrate model for {ticker}. Cannot run simulation.")
+                return {
+                    "ticker": ticker,
+                    "technical_score": float(score),
+                    "category_scores": details.get("category_scores", {}),
+                    "signals": details.get("signals", []),
+                    "warnings": details.get("warnings", []) + ["Monte Carlo error: Failed to calibrate model"],
+                    "report": details,
+                    "monte_carlo_error": "Failed to calibrate model"
+                }
+            
+        except Exception as e:
+            logger.error(f"Error calibrating model for {ticker}: {e}")
+            logger.error(traceback.format_exc())
+            return {
+                "ticker": ticker,
+                "technical_score": float(score),
+                "category_scores": details.get("category_scores", {}),
+                "signals": details.get("signals", []),
+                "warnings": details.get("warnings", []) + [f"Monte Carlo error: {str(e)}"],
+                "report": details,
+                "monte_carlo_error": f"Failed to calibrate model: {str(e)}"
+            }
+        
+        # Run simulation
+        try:
+            # Run the simulation
+            simulation_results = asyncio.run(simulator.run_simulation())
+            
+            if not simulation_results:
+                logger.warning(f"No simulation results for {ticker}")
+                return {
+                    "ticker": ticker,
+                    "technical_score": float(score),
+                    "category_scores": details.get("category_scores", {}),
+                    "signals": details.get("signals", []),
+                    "warnings": details.get("warnings", []) + ["Monte Carlo error: No simulation results"],
+                    "report": details,
+                    "monte_carlo_error": "No simulation results"
+                }
+                
+            # Get results summary
+            summary = simulator.get_results_summary()
+            
+            # Format report
+            mc_report = {
+                "ticker": ticker,
+                "current_price": summary["current_price"],
+                "annualized_volatility": summary["annualized_volatility"],
+                "time_horizons": [],
+                "raw_simulations": simulation_results
+            }
+            
+            # Add volatility model information if available
+            if "volatility_models" in summary:
+                mc_report["volatility_models"] = summary["volatility_models"]
+            
+            # Add each time horizon to the report
+            for days, horizon_data in summary["horizons"].items():
+                mc_report["time_horizons"].append({
+                    "days": days,
+                    "label": _format_time_horizon(days),
+                    "expected_price": horizon_data["expected_price"],
+                    "expected_change_pct": horizon_data["expected_change_pct"],
+                    "lower_bound": horizon_data["lower_bound"],
+                    "upper_bound": horizon_data["upper_bound"],
+                    "prob_increase": horizon_data["prob_increase"],
+                    "prob_up_10pct": horizon_data["prob_up_10pct"],
+                    "prob_down_10pct": horizon_data["prob_down_10pct"]
+                })
+            
+            # Get the 1-month horizon as the primary projection
+            time_horizons = mc_report.get("time_horizons", [])
+            horizon_1m = next((h for h in time_horizons if h["days"] == 21), None)
+            
+            # Enhance raw indicators with Monte Carlo data
+            raw_indicators = details.get("raw_indicators", {})
+            if horizon_1m:
+                raw_indicators["mc_expected_price"] = horizon_1m["expected_price"]
+                raw_indicators["mc_expected_change_pct"] = horizon_1m["expected_change_pct"]
+                raw_indicators["mc_lower_bound"] = horizon_1m["lower_bound"]
+                raw_indicators["mc_upper_bound"] = horizon_1m["upper_bound"]
+                raw_indicators["mc_prob_increase"] = horizon_1m["prob_increase"]
+                raw_indicators["mc_prob_up_10pct"] = horizon_1m["prob_up_10pct"]
+                raw_indicators["mc_prob_down_10pct"] = horizon_1m["prob_down_10pct"]
+            
+            # Create enhanced report
+            enhanced_report = {
+                "ticker": ticker,
+                "technical_score": float(score),
+                "category_scores": details.get("category_scores", {}),
+                "signals": details.get("signals", []),
+                "warnings": details.get("warnings", []),
+                "report": {
+                    "raw_indicators": raw_indicators,
+                    "category_scores": details.get("category_scores", {}),
+                    "monte_carlo": {
+                        "expected_price": horizon_1m["expected_price"] if horizon_1m else None,
+                        "expected_change_pct": horizon_1m["expected_change_pct"] if horizon_1m else None,
+                        "lower_bound": horizon_1m["lower_bound"] if horizon_1m else None,
+                        "upper_bound": horizon_1m["upper_bound"] if horizon_1m else None,
+                        "prob_increase": horizon_1m["prob_increase"] if horizon_1m else None,
+                        "prob_up_10pct": horizon_1m["prob_up_10pct"] if horizon_1m else None,
+                        "prob_down_10pct": horizon_1m["prob_down_10pct"] if horizon_1m else None,
+                        "time_horizons": time_horizons,
+                        "volatility_models": mc_report.get("volatility_models")  # Include volatility model info
+                    }
+                }
+            }
+            
+            return enhanced_report
+            
+        except Exception as e:
+            logger.error(f"Error generating Monte Carlo simulation for {ticker}: {e}")
+            logger.error(traceback.format_exc())
+            return {
+                "ticker": ticker,
+                "technical_score": float(score),
+                "category_scores": details.get("category_scores", {}),
+                "signals": details.get("signals", []),
+                "warnings": details.get("warnings", []) + [f"Monte Carlo error: {str(e)}"],
+                "report": details,
+                "monte_carlo_error": str(e)
+            }
+    except Exception as e:
+        logger.error(f"Error generating Monte Carlo report for {ticker}: {e}")
+        logger.error(traceback.format_exc())
+        return {
+            "ticker": ticker,
+            "technical_score": float(score),
+            "category_scores": details.get("category_scores", {}),
+            "signals": details.get("signals", []),
+            "warnings": details.get("warnings", []) + [f"Monte Carlo error: {str(e)}"],
+            "report": details,
+            "monte_carlo_error": str(e)
         }
 
 def perform_stock_screening(tickers, batch_size=10):
@@ -232,6 +572,7 @@ def save_results_to_json(json_data, output_dir="output", filename_prefix="fundam
         logger.error(f"Error saving results to JSON: {e}")
         logger.debug(traceback.format_exc())
         return None
+
 
 if __name__ == "__main__":
     start = datetime.now()
@@ -460,14 +801,60 @@ if __name__ == "__main__":
                     for tech_data in tech_reports:
                         tech_json["stocks"].append(tech_data)
                     
+                    # Generate Monte Carlo reports
+                    rich_console.print("\n[bold]Generating Monte Carlo simulations...[/bold]")
+                    mc_reports = []
+                    
+                    with Progress(
+                        TextColumn("[progress.description]{task.description}"),
+                        BarColumn(),
+                        TaskProgressColumn(),
+                        TimeElapsedColumn(),
+                        TimeRemainingColumn(),
+                        console=rich_console
+                    ) as progress:
+                        task = progress.add_task("Generating Monte Carlo simulations...", total=len(tech_results))
+                        
+                        with ThreadPoolExecutor(max_workers=min(os.cpu_count()*2, len(tech_results))) as executor:
+                            mc_future_to_ticker = {
+                                executor.submit(generate_monte_carlo_report_task, ticker, score, details): ticker 
+                                for ticker, score, details in tech_results
+                            }
+                            
+                            for future in tqdm(mc_future_to_ticker, total=len(mc_future_to_ticker), 
+                                              desc="Generating Monte Carlo simulations", leave=False):
+                                try:
+                                    mc_report = future.result()
+                                    mc_reports.append(mc_report)
+                                except Exception as e:
+                                    ticker = mc_future_to_ticker[future]
+                                    logger.error(f"Error generating Monte Carlo report for {ticker}: {e}")
+                                
+                                progress.update(task, advance=1)
+                    
+                    # Add Monte Carlo reports to the JSON data
+                    monte_carlo_json = {
+                        "screening_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "stocks": mc_reports
+                    }
+                    
+                    # Save Monte Carlo results
+                    mc_output_filename = save_results_to_json(monte_carlo_json, filename_prefix="monte_carlo_screening")
+                    if mc_output_filename:
+                        rich_console.print(f"\n[bold green]Monte Carlo results saved to {mc_output_filename}[/bold green]")
+                    else:
+                        rich_console.print("\n[bold red]Error saving Monte Carlo results to file. Check logs for details.[/bold red]")
+                    
+                    # Also save the technical results
                     tech_output_filename = save_results_to_json(tech_json, filename_prefix="technical_screening")
                     if tech_output_filename:
                         rich_console.print(f"\n[bold green]Technical results saved to {tech_output_filename}[/bold green]")
                     else:
                         rich_console.print("\n[bold red]Error saving technical results to file. Check logs for details.[/bold red]")
                     
-                    # Create mapping for fast signal and warning lookup
+                    # Create mapping for fast lookup of reports by ticker
                     tech_reports_map = {r["ticker"]: r for r in tech_reports}
+                    mc_reports_map = {r["ticker"]: r for r in mc_reports}
                     
                     # Split technical results by fundamental group
                     tech_results_top = [item for item in tech_results if item[2].get('fundamental_group') == 'top']
@@ -485,76 +872,147 @@ if __name__ == "__main__":
                         
                         rich_console.print("\n[bold]Technical Analysis for Top Fundamental Stocks:[/bold]")
                         tech_categories = list(tech_results_top[0][2]['category_scores'].keys())
+                        
+                        # For the top technical quartile of top fundamental stocks
                         table_tech_top_top = Table(title="Top Technical Quartile (Top Fundamentals)")
                         table_tech_top_top.add_column("Ticker", style="cyan")
                         table_tech_top_top.add_column("Score", justify="right", style="green")
                         table_tech_top_top.add_column("Current", justify="right", style="yellow")
-                        table_tech_top_top.add_column("Expected", justify="right", style="yellow")
-                        table_tech_top_top.add_column("Low", justify="right", style="yellow")
-                        table_tech_top_top.add_column("High", justify="right", style="yellow")
+                        table_tech_top_top.add_column("Tech Exp", justify="right", style="yellow")
+                        table_tech_top_top.add_column("Tech Low", justify="right", style="yellow")
+                        table_tech_top_top.add_column("Tech High", justify="right", style="yellow")
+                        # Monte Carlo columns with both price and percentage
+                        table_tech_top_top.add_column("MC Exp $", justify="right", style="blue")
+                        table_tech_top_top.add_column("MC Exp Δ", justify="right", style="blue")
+                        table_tech_top_top.add_column("MC Low $", justify="right", style="blue") 
+                        table_tech_top_top.add_column("MC Low %", justify="right", style="blue")
+                        table_tech_top_top.add_column("MC High $", justify="right", style="blue")
+                        table_tech_top_top.add_column("MC High %", justify="right", style="blue")
+                        # Continue with other columns
                         for cat in tech_categories:
                             table_tech_top_top.add_column(cat.title(), justify="right")
                         table_tech_top_top.add_column("Signals", style="green")
                         table_tech_top_top.add_column("Warnings", style="red")
-                        
+
                         for ticker, score, details in tech_top_top_quartile:
+                            # Get technical report data
                             report_data = tech_reports_map.get(ticker, {})
                             raw = report_data.get("report", {}).get("raw_indicators", {})
                             current = raw.get("current_price", "N/A")
                             expected = raw.get("expected_price", "N/A")
                             low = raw.get("probable_low", "N/A")
                             high = raw.get("probable_high", "N/A")
+                            
+                            # Get Monte Carlo report data
+                            mc_data = mc_reports_map.get(ticker, {})
+                            mc_report = mc_data.get("report", {}).get("monte_carlo", {})
+                            mc_expected = mc_report.get("expected_price", "N/A")
+                            mc_expected_pct = mc_report.get("expected_change_pct", "N/A")
+                            mc_low = mc_report.get("lower_bound", "N/A")
+                            mc_high = mc_report.get("upper_bound", "N/A")
+                            mc_low_prob = mc_report.get("prob_down_10pct", "N/A")
+                            mc_high_prob = mc_report.get("prob_up_10pct", "N/A")
+                            
+                            # Create row with technical and Monte Carlo data
                             row = [
                                 ticker,
                                 f"{score:.8f}",
-                                f"{current:.2f}" if isinstance(current, (int, float)) else current,
-                                f"{expected:.2f}" if isinstance(expected, (int, float)) else expected,
-                                f"{low:.2f}" if isinstance(low, (int, float)) else low,
-                                f"{high:.2f}" if isinstance(high, (int, float)) else high
+                                f"{current:.2f}" if isinstance(current, (int, float)) else str(current),
+                                f"{expected:.2f}" if isinstance(expected, (int, float)) else str(expected),
+                                f"{low:.2f}" if isinstance(low, (int, float)) else str(low),
+                                f"{high:.2f}" if isinstance(high, (int, float)) else str(high),
+                                # Monte Carlo data with percentages
+                                f"{mc_expected:.2f}" if isinstance(mc_expected, (int, float)) else str(mc_expected),
+                                f"{mc_expected_pct:.1f}%" if isinstance(mc_expected_pct, (int, float)) else str(mc_expected_pct),
+                                f"{mc_low:.2f}" if isinstance(mc_low, (int, float)) else str(mc_low),
+                                f"{mc_low_prob:.1f}%" if isinstance(mc_low_prob, (int, float)) else str(mc_low_prob),
+                                f"{mc_high:.2f}" if isinstance(mc_high, (int, float)) else str(mc_high),
+                                f"{mc_high_prob:.1f}%" if isinstance(mc_high_prob, (int, float)) else str(mc_high_prob),
                             ]
+                            
+                            # Add category scores
                             for cat in tech_categories:
                                 cat_score = details['category_scores'].get(cat, 0)
                                 row.append(f"{cat_score:.8f}")
+                            
+                            # Add signals and warnings
                             signals = ", ".join(report_data.get("signals", [])[:2])
                             warnings = ", ".join(report_data.get("warnings", [])[:2])
                             row.extend([signals, warnings])
+                            
                             table_tech_top_top.add_row(*row)
+                        
                         rich_console.print(table_tech_top_top)
                         
+                        # Create second table for bottom technical quartile, top fundamentals
                         table_tech_top_bottom = Table(title="Bottom Technical Quartile (Top Fundamentals)")
                         table_tech_top_bottom.add_column("Ticker", style="cyan")
                         table_tech_top_bottom.add_column("Score", justify="right", style="green")
                         table_tech_top_bottom.add_column("Current", justify="right", style="yellow")
-                        table_tech_top_bottom.add_column("Expected", justify="right", style="yellow")
-                        table_tech_top_bottom.add_column("Low", justify="right", style="yellow")
-                        table_tech_top_bottom.add_column("High", justify="right", style="yellow")
+                        table_tech_top_bottom.add_column("Tech Exp", justify="right", style="yellow")
+                        table_tech_top_bottom.add_column("Tech Low", justify="right", style="yellow")
+                        table_tech_top_bottom.add_column("Tech High", justify="right", style="yellow")
+                        # Monte Carlo columns with both price and percentage
+                        table_tech_top_bottom.add_column("MC Exp $", justify="right", style="blue")
+                        table_tech_top_bottom.add_column("MC Exp Δ", justify="right", style="blue")
+                        table_tech_top_bottom.add_column("MC Low $", justify="right", style="blue") 
+                        table_tech_top_bottom.add_column("MC Low %", justify="right", style="blue")
+                        table_tech_top_bottom.add_column("MC High $", justify="right", style="blue")
+                        table_tech_top_bottom.add_column("MC High %", justify="right", style="blue")
+                        # Continue with other columns
                         for cat in tech_categories:
                             table_tech_top_bottom.add_column(cat.title(), justify="right")
                         table_tech_top_bottom.add_column("Signals", style="green")
                         table_tech_top_bottom.add_column("Warnings", style="red")
-                        
+
                         for ticker, score, details in tech_top_bottom_quartile:
+                            # Get technical report data
                             report_data = tech_reports_map.get(ticker, {})
                             raw = report_data.get("report", {}).get("raw_indicators", {})
                             current = raw.get("current_price", "N/A")
                             expected = raw.get("expected_price", "N/A")
                             low = raw.get("probable_low", "N/A")
                             high = raw.get("probable_high", "N/A")
+                            
+                            # Get Monte Carlo report data
+                            mc_data = mc_reports_map.get(ticker, {})
+                            mc_report = mc_data.get("report", {}).get("monte_carlo", {})
+                            mc_expected = mc_report.get("expected_price", "N/A")
+                            mc_expected_pct = mc_report.get("expected_change_pct", "N/A")
+                            mc_low = mc_report.get("lower_bound", "N/A")
+                            mc_high = mc_report.get("upper_bound", "N/A")
+                            mc_low_prob = mc_report.get("prob_down_10pct", "N/A")
+                            mc_high_prob = mc_report.get("prob_up_10pct", "N/A")
+                            
+                            # Create row with technical and Monte Carlo data
                             row = [
                                 ticker,
                                 f"{score:.8f}",
-                                f"{current:.2f}" if isinstance(current, (int, float)) else current,
-                                f"{expected:.2f}" if isinstance(expected, (int, float)) else expected,
-                                f"{low:.2f}" if isinstance(low, (int, float)) else low,
-                                f"{high:.2f}" if isinstance(high, (int, float)) else high
+                                f"{current:.2f}" if isinstance(current, (int, float)) else str(current),
+                                f"{expected:.2f}" if isinstance(expected, (int, float)) else str(expected),
+                                f"{low:.2f}" if isinstance(low, (int, float)) else str(low),
+                                f"{high:.2f}" if isinstance(high, (int, float)) else str(high),
+                                # Monte Carlo data with percentages
+                                f"{mc_expected:.2f}" if isinstance(mc_expected, (int, float)) else str(mc_expected),
+                                f"{mc_expected_pct:.1f}%" if isinstance(mc_expected_pct, (int, float)) else str(mc_expected_pct),
+                                f"{mc_low:.2f}" if isinstance(mc_low, (int, float)) else str(mc_low),
+                                f"{mc_low_prob:.1f}%" if isinstance(mc_low_prob, (int, float)) else str(mc_low_prob),
+                                f"{mc_high:.2f}" if isinstance(mc_high, (int, float)) else str(mc_high),
+                                f"{mc_high_prob:.1f}%" if isinstance(mc_high_prob, (int, float)) else str(mc_high_prob),
                             ]
+                            
+                            # Add category scores
                             for cat in tech_categories:
                                 cat_score = details['category_scores'].get(cat, 0)
                                 row.append(f"{cat_score:.8f}")
+                            
+                            # Add signals and warnings
                             signals = ", ".join(report_data.get("signals", [])[:2])
                             warnings = ", ".join(report_data.get("warnings", [])[:2])
                             row.extend([signals, warnings])
+                            
                             table_tech_top_bottom.add_row(*row)
+                        
                         rich_console.print(table_tech_top_bottom)
                     
                     # Process technical quartiles for bottom fundamental group
@@ -569,76 +1027,147 @@ if __name__ == "__main__":
                         
                         rich_console.print("\n[bold]Technical Analysis for Bottom Fundamental Stocks:[/bold]")
                         tech_categories = list(tech_results_bottom[0][2]['category_scores'].keys())
+                        
+                        # Create enhanced table with consistent Monte Carlo columns
                         table_tech_bottom_top = Table(title="Top Technical Quartile (Bottom Fundamentals)")
                         table_tech_bottom_top.add_column("Ticker", style="cyan")
                         table_tech_bottom_top.add_column("Score", justify="right", style="green")
                         table_tech_bottom_top.add_column("Current", justify="right", style="yellow")
-                        table_tech_bottom_top.add_column("Expected", justify="right", style="yellow")
-                        table_tech_bottom_top.add_column("Low", justify="right", style="yellow")
-                        table_tech_bottom_top.add_column("High", justify="right", style="yellow")
+                        table_tech_bottom_top.add_column("Tech Exp", justify="right", style="yellow")
+                        table_tech_bottom_top.add_column("Tech Low", justify="right", style="yellow")
+                        table_tech_bottom_top.add_column("Tech High", justify="right", style="yellow")
+                        # Monte Carlo columns with both price and percentage - CONSISTENT FORMAT
+                        table_tech_bottom_top.add_column("MC Exp $", justify="right", style="blue")
+                        table_tech_bottom_top.add_column("MC Exp Δ", justify="right", style="blue")
+                        table_tech_bottom_top.add_column("MC Low $", justify="right", style="blue") 
+                        table_tech_bottom_top.add_column("MC Low %", justify="right", style="blue")
+                        table_tech_bottom_top.add_column("MC High $", justify="right", style="blue")
+                        table_tech_bottom_top.add_column("MC High %", justify="right", style="blue")
+                        # Continue with other columns
                         for cat in tech_categories:
                             table_tech_bottom_top.add_column(cat.title(), justify="right")
                         table_tech_bottom_top.add_column("Signals", style="green")
                         table_tech_bottom_top.add_column("Warnings", style="red")
                         
                         for ticker, score, details in tech_bottom_top_quartile:
+                            # Get technical report data
                             report_data = tech_reports_map.get(ticker, {})
                             raw = report_data.get("report", {}).get("raw_indicators", {})
                             current = raw.get("current_price", "N/A")
                             expected = raw.get("expected_price", "N/A")
                             low = raw.get("probable_low", "N/A")
                             high = raw.get("probable_high", "N/A")
+                            
+                            # Get Monte Carlo report data
+                            mc_data = mc_reports_map.get(ticker, {})
+                            mc_report = mc_data.get("report", {}).get("monte_carlo", {})
+                            mc_expected = mc_report.get("expected_price", "N/A")
+                            mc_expected_pct = mc_report.get("expected_change_pct", "N/A")
+                            mc_low = mc_report.get("lower_bound", "N/A")
+                            mc_high = mc_report.get("upper_bound", "N/A")
+                            mc_low_prob = mc_report.get("prob_down_10pct", "N/A")
+                            mc_high_prob = mc_report.get("prob_up_10pct", "N/A")
+                            
+                            # Create row with technical and Monte Carlo data - CONSISTENT FORMAT
                             row = [
                                 ticker,
                                 f"{score:.8f}",
-                                f"{current:.2f}" if isinstance(current, (int, float)) else current,
-                                f"{expected:.2f}" if isinstance(expected, (int, float)) else expected,
-                                f"{low:.2f}" if isinstance(low, (int, float)) else low,
-                                f"{high:.2f}" if isinstance(high, (int, float)) else high
+                                f"{current:.2f}" if isinstance(current, (int, float)) else str(current),
+                                f"{expected:.2f}" if isinstance(expected, (int, float)) else str(expected),
+                                f"{low:.2f}" if isinstance(low, (int, float)) else str(low),
+                                f"{high:.2f}" if isinstance(high, (int, float)) else str(high),
+                                # Monte Carlo data with percentages
+                                f"{mc_expected:.2f}" if isinstance(mc_expected, (int, float)) else str(mc_expected),
+                                f"{mc_expected_pct:.1f}%" if isinstance(mc_expected_pct, (int, float)) else str(mc_expected_pct),
+                                f"{mc_low:.2f}" if isinstance(mc_low, (int, float)) else str(mc_low),
+                                f"{mc_low_prob:.1f}%" if isinstance(mc_low_prob, (int, float)) else str(mc_low_prob),
+                                f"{mc_high:.2f}" if isinstance(mc_high, (int, float)) else str(mc_high),
+                                f"{mc_high_prob:.1f}%" if isinstance(mc_high_prob, (int, float)) else str(mc_high_prob),
                             ]
+                            
+                            # Add category scores
                             for cat in tech_categories:
                                 cat_score = details['category_scores'].get(cat, 0)
                                 row.append(f"{cat_score:.8f}")
+                            
+                            # Add signals and warnings
                             signals = ", ".join(report_data.get("signals", [])[:2])
                             warnings = ", ".join(report_data.get("warnings", [])[:2])
                             row.extend([signals, warnings])
+                            
                             table_tech_bottom_top.add_row(*row)
+                        
                         rich_console.print(table_tech_bottom_top)
                         
+                        # Create final table for bottom technical quartile, bottom fundamentals
                         table_tech_bottom_bottom = Table(title="Bottom Technical Quartile (Bottom Fundamentals)")
                         table_tech_bottom_bottom.add_column("Ticker", style="cyan")
                         table_tech_bottom_bottom.add_column("Score", justify="right", style="green")
                         table_tech_bottom_bottom.add_column("Current", justify="right", style="yellow")
-                        table_tech_bottom_bottom.add_column("Expected", justify="right", style="yellow")
-                        table_tech_bottom_bottom.add_column("Low", justify="right", style="yellow")
-                        table_tech_bottom_bottom.add_column("High", justify="right", style="yellow")
+                        table_tech_bottom_bottom.add_column("Tech Exp", justify="right", style="yellow")
+                        table_tech_bottom_bottom.add_column("Tech Low", justify="right", style="yellow")
+                        table_tech_bottom_bottom.add_column("Tech High", justify="right", style="yellow")
+                        # Monte Carlo columns with both price and percentage - CONSISTENT FORMAT
+                        table_tech_bottom_bottom.add_column("MC Exp $", justify="right", style="blue")
+                        table_tech_bottom_bottom.add_column("MC Exp Δ", justify="right", style="blue")
+                        table_tech_bottom_bottom.add_column("MC Low $", justify="right", style="blue") 
+                        table_tech_bottom_bottom.add_column("MC Low %", justify="right", style="blue")
+                        table_tech_bottom_bottom.add_column("MC High $", justify="right", style="blue")
+                        table_tech_bottom_bottom.add_column("MC High %", justify="right", style="blue")
+                        # Continue with other columns
                         for cat in tech_categories:
                             table_tech_bottom_bottom.add_column(cat.title(), justify="right")
                         table_tech_bottom_bottom.add_column("Signals", style="green")
                         table_tech_bottom_bottom.add_column("Warnings", style="red")
                         
                         for ticker, score, details in tech_bottom_bottom_quartile:
+                            # Get technical report data
                             report_data = tech_reports_map.get(ticker, {})
                             raw = report_data.get("report", {}).get("raw_indicators", {})
                             current = raw.get("current_price", "N/A")
                             expected = raw.get("expected_price", "N/A")
                             low = raw.get("probable_low", "N/A")
                             high = raw.get("probable_high", "N/A")
+                            
+                            # Get Monte Carlo report data
+                            mc_data = mc_reports_map.get(ticker, {})
+                            mc_report = mc_data.get("report", {}).get("monte_carlo", {})
+                            mc_expected = mc_report.get("expected_price", "N/A")
+                            mc_expected_pct = mc_report.get("expected_change_pct", "N/A")
+                            mc_low = mc_report.get("lower_bound", "N/A")
+                            mc_high = mc_report.get("upper_bound", "N/A")
+                            mc_low_prob = mc_report.get("prob_down_10pct", "N/A")
+                            mc_high_prob = mc_report.get("prob_up_10pct", "N/A")
+                            
+                            # Create row with technical and Monte Carlo data - CONSISTENT FORMAT
                             row = [
                                 ticker,
                                 f"{score:.8f}",
-                                f"{current:.2f}" if isinstance(current, (int, float)) else current,
-                                f"{expected:.2f}" if isinstance(expected, (int, float)) else expected,
-                                f"{low:.2f}" if isinstance(low, (int, float)) else low,
-                                f"{high:.2f}" if isinstance(high, (int, float)) else high
+                                f"{current:.2f}" if isinstance(current, (int, float)) else str(current),
+                                f"{expected:.2f}" if isinstance(expected, (int, float)) else str(expected),
+                                f"{low:.2f}" if isinstance(low, (int, float)) else str(low),
+                                f"{high:.2f}" if isinstance(high, (int, float)) else str(high),
+                                # Monte Carlo data with percentages
+                                f"{mc_expected:.2f}" if isinstance(mc_expected, (int, float)) else str(mc_expected),
+                                f"{mc_expected_pct:.1f}%" if isinstance(mc_expected_pct, (int, float)) else str(mc_expected_pct),
+                                f"{mc_low:.2f}" if isinstance(mc_low, (int, float)) else str(mc_low),
+                                f"{mc_low_prob:.1f}%" if isinstance(mc_low_prob, (int, float)) else str(mc_low_prob),
+                                f"{mc_high:.2f}" if isinstance(mc_high, (int, float)) else str(mc_high),
+                                f"{mc_high_prob:.1f}%" if isinstance(mc_high_prob, (int, float)) else str(mc_high_prob),
                             ]
+                            
+                            # Add category scores
                             for cat in tech_categories:
                                 cat_score = details['category_scores'].get(cat, 0)
                                 row.append(f"{cat_score:.8f}")
+                            
+                            # Add signals and warnings
                             signals = ", ".join(report_data.get("signals", [])[:2])
                             warnings = ", ".join(report_data.get("warnings", [])[:2])
                             row.extend([signals, warnings])
+                            
                             table_tech_bottom_bottom.add_row(*row)
+                        
                         rich_console.print(table_tech_bottom_bottom)
                 else:
                     rich_console.print("[bold red]No valid stocks were successfully screened with technical indicators.[/bold red]")
@@ -661,3 +1190,4 @@ if __name__ == "__main__":
 
     end = datetime.now()
     print(f"time to completion: {end-start}")
+
