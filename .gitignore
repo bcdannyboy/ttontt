@@ -1,7 +1,7 @@
 # output directory
 output/
 
-*/*/.cache/
+*/*/cache/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -47,7 +47,7 @@ htmlcov/
 .nox/
 .coverage
 .coverage.*
-.cache
+cache
 nosetests.xml
 coverage.xml
 *.cover

@@ -13,13 +13,13 @@ from src.screener.fundamentals.fundamentals_core import metrics_cache, metrics_c
 from src.screener.fundamentals.fundamentals_data import get_financial_data_async
 from src.screener.fundamentals.fundamentals_metrics import (extract_metrics_from_financial_data, preprocess_data,
                                     calculate_z_scores, calculate_weighted_score, construct_earnings_from_income,
-                                    get_attribute_value, PROFITABILITY_WEIGHTS, GROWTH_WEIGHTS,
+                                    get_attribute_value, ensure_essential_z_scores, PROFITABILITY_WEIGHTS, GROWTH_WEIGHTS,
                                     FINANCIAL_HEALTH_WEIGHTS, VALUATION_WEIGHTS, EFFICIENCY_WEIGHTS, ANALYST_ESTIMATES_WEIGHTS)
 
 logger = logging.getLogger(__name__)
 
 # Create a cache directory to speed up repeated analyses
-CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache")
+CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 def get_metrics_cache_path(ticker):
@@ -176,11 +176,28 @@ async def screen_stocks_async(tickers, max_concurrent: int = None, progress_bar=
     
     # Preprocess metrics and calculate scores
     try:
+        # Preprocess data to handle outliers
         preprocessed_metrics = preprocess_data(all_metrics)
+        
+        # Calculate z-scores
         z_scores = calculate_z_scores(preprocessed_metrics)
         
+        # Ensure all essential metrics have z-scores (fixes missing metrics)
+        weights_dicts = [
+            PROFITABILITY_WEIGHTS, 
+            GROWTH_WEIGHTS, 
+            FINANCIAL_HEALTH_WEIGHTS, 
+            VALUATION_WEIGHTS, 
+            EFFICIENCY_WEIGHTS, 
+            ANALYST_ESTIMATES_WEIGHTS
+        ]
+        z_scores = ensure_essential_z_scores(all_metrics, z_scores, weights_dicts)
+        
+        # Calculate scores for each ticker
         for ticker in valid_tickers:
             ticker_z_scores = z_scores[ticker]
+            
+            # Calculate category scores using improved weighted score function
             profitability_score = calculate_weighted_score(ticker_z_scores, PROFITABILITY_WEIGHTS)
             growth_score = calculate_weighted_score(ticker_z_scores, GROWTH_WEIGHTS)
             financial_health_score = calculate_weighted_score(ticker_z_scores, FINANCIAL_HEALTH_WEIGHTS)
@@ -188,6 +205,7 @@ async def screen_stocks_async(tickers, max_concurrent: int = None, progress_bar=
             efficiency_score = calculate_weighted_score(ticker_z_scores, EFFICIENCY_WEIGHTS)
             analyst_estimates_score = calculate_weighted_score(ticker_z_scores, ANALYST_ESTIMATES_WEIGHTS)
             
+            # Calculate composite score
             composite_score = (
                 profitability_score * 0.20 +
                 growth_score * 0.20 +
@@ -283,6 +301,17 @@ def screen_stocks(tickers, max_workers: int = None, progress_bar=True):
         # Preprocess metrics and calculate scores
         preprocessed_metrics = preprocess_data(all_metrics)
         z_scores = calculate_z_scores(preprocessed_metrics)
+        
+        # Ensure all essential metrics have z-scores (fixes missing metrics)
+        weights_dicts = [
+            PROFITABILITY_WEIGHTS, 
+            GROWTH_WEIGHTS, 
+            FINANCIAL_HEALTH_WEIGHTS, 
+            VALUATION_WEIGHTS, 
+            EFFICIENCY_WEIGHTS, 
+            ANALYST_ESTIMATES_WEIGHTS
+        ]
+        z_scores = ensure_essential_z_scores(all_metrics, z_scores, weights_dicts)
         
         results = []
         for ticker in valid_tickers:

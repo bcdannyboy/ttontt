@@ -439,6 +439,8 @@ def preprocess_data(data_dict):
                 if metric not in metrics_data:
                     metrics_data[metric] = []
                 metrics_data[metric].append(value)
+    
+    # Apply winsorization for outlier handling
     for metric, values in metrics_data.items():
         if len(values) >= 5:
             values_array = np.array(values)
@@ -467,22 +469,31 @@ def calculate_z_scores(data_dict):
     """
     z_scores = {ticker: {} for ticker in data_dict}
     metrics_dict = {}
+    
+    # Collect all values for each metric across tickers
     for ticker, metrics in data_dict.items():
         for metric, value in metrics.items():
             if isinstance(value, (int, float)) and np.isfinite(value) and not pd.isna(value):
                 metrics_dict.setdefault(metric, []).append((ticker, value))
+    
+    # Calculate z-scores for each metric
     for metric, ticker_values in metrics_dict.items():
         if len(ticker_values) < 2:
             for ticker, value in ticker_values:
                 z_scores[ticker][metric] = 0.0
             continue
+        
         tickers, values = zip(*ticker_values)
         values_tensor = torch.tensor(values, dtype=torch.float32, device=device)
+        
+        # Handle highly skewed distributions with robustness
         if len(values) > 4 and torch.std(values_tensor) > 0:
             mean_val = torch.mean(values_tensor)
             std_val = torch.std(values_tensor)
             skewness = torch.abs(torch.mean(((values_tensor - mean_val) / std_val) ** 3)).item()
+            
             if skewness > 2:
+                # Use robust statistics for skewed data
                 median_val = torch.median(values_tensor)
                 q1 = torch.quantile(values_tensor, 0.25)
                 q3 = torch.quantile(values_tensor, 0.75)
@@ -490,33 +501,80 @@ def calculate_z_scores(data_dict):
                 robust_std = max((iqr / 1.349).item(), 1e-6)
                 metric_z_scores = (values_tensor - median_val) / robust_std
             else:
+                # Use standard z-score for normally distributed data
                 metric_z_scores = (values_tensor - mean_val) / max(std_val, torch.tensor(1e-6, device=device))
         else:
+            # Handle small sample sizes
             mean_val = torch.mean(values_tensor)
             std_val = torch.std(values_tensor)
             metric_z_scores = (values_tensor - mean_val) / max(std_val, torch.tensor(1e-6, device=device))
+        
+        # Clamp values to prevent extreme outliers
         metric_z_scores = torch.clamp(metric_z_scores, -3.0, 3.0)
+        
+        # Assign z-scores to tickers
         for ticker, z_score in zip(tickers, metric_z_scores):
             z_scores[ticker][metric] = z_score.item()
+    
+    return z_scores
+
+def ensure_essential_z_scores(raw_metrics, z_scores, weights_dicts):
+    """
+    Ensure all essential metrics used in weights_dicts have z-scores,
+    filling in with zeros for missing values.
+    
+    Args:
+        raw_metrics (dict): Raw metrics for all tickers
+        z_scores (dict): Z-scores dictionary to update
+        weights_dicts (list): List of weight dictionaries
+        
+    Returns:
+        dict: Updated z-scores with all essential metrics
+    """
+    # Collect all essential metrics from weight dictionaries
+    essential_metrics = set()
+    for weights_dict in weights_dicts:
+        essential_metrics.update(weights_dict.keys())
+    
+    # Ensure each ticker has all essential metrics
+    for ticker in z_scores:
+        for metric in essential_metrics:
+            if metric not in z_scores[ticker]:
+                z_scores[ticker][metric] = 0.0
+    
     return z_scores
 
 def calculate_weighted_score(z_scores, weights):
     """
     Calculate weighted score based on z-scores and weights.
+    Only uses metrics that are present in z_scores.
     """
     if not weights:
         return 0
+    
     score = 0
     total_weight = 0
-    for metric, weight in weights.items():
-        weight_abs = abs(weight)
+    available_metrics = 0
+    
+    # Count available metrics with z-scores
+    for metric in weights:
         if metric in z_scores and np.isfinite(z_scores[metric]):
+            available_metrics += 1
+    
+    # If no metrics are available, return a neutral score
+    if available_metrics == 0:
+        return 0
+    
+    # Calculate weighted average of z-scores for available metrics
+    for metric, weight in weights.items():
+        if metric in z_scores and np.isfinite(z_scores[metric]):
+            weight_abs = abs(weight)
             score += z_scores[metric] * weight
-        else:
-            score += (-1 if weight > 0 else 1) * weight_abs
-        total_weight += weight_abs
+            total_weight += weight_abs
+    
     if total_weight == 0:
         return 0
+    
     return score / total_weight
 
 def construct_earnings_from_income(income_data):
