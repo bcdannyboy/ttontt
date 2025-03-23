@@ -479,6 +479,7 @@ def calculate_z_scores(data_dict):
     # Calculate z-scores for each metric
     for metric, ticker_values in metrics_dict.items():
         if len(ticker_values) < 2:
+            logger.warning(f"Not enough data points for z-score: {metric} (only {len(ticker_values)} values)")
             for ticker, value in ticker_values:
                 z_scores[ticker][metric] = 0.0
             continue
@@ -486,30 +487,48 @@ def calculate_z_scores(data_dict):
         tickers, values = zip(*ticker_values)
         values_tensor = torch.tensor(values, dtype=torch.float32, device=device)
         
-        # Handle highly skewed distributions with robustness
-        if len(values) > 4 and torch.std(values_tensor) > 0:
-            mean_val = torch.mean(values_tensor)
-            std_val = torch.std(values_tensor)
-            skewness = torch.abs(torch.mean(((values_tensor - mean_val) / std_val) ** 3)).item()
-            
-            if skewness > 2:
-                # Use robust statistics for skewed data
-                median_val = torch.median(values_tensor)
-                q1 = torch.quantile(values_tensor, 0.25)
-                q3 = torch.quantile(values_tensor, 0.75)
-                iqr = q3 - q1
-                robust_std = max((iqr / 1.349).item(), 1e-6)
-                metric_z_scores = (values_tensor - median_val) / robust_std
-            else:
-                # Use standard z-score for normally distributed data
-                metric_z_scores = (values_tensor - mean_val) / max(std_val, torch.tensor(1e-6, device=device))
-        else:
-            # Handle small sample sizes
-            mean_val = torch.mean(values_tensor)
-            std_val = torch.std(values_tensor)
-            metric_z_scores = (values_tensor - mean_val) / max(std_val, torch.tensor(1e-6, device=device))
+        # Check for zero variance metrics
+        if torch.allclose(values_tensor, values_tensor[0]):
+            logger.warning(f"Zero variance for metric: {metric}. All values: {values[0]}")
+            for ticker in tickers:
+                z_scores[ticker][metric] = 0.0
+            continue
         
-        # Clamp values to prevent extreme outliers
+        # Handle normally distributed and skewed data
+        mean_val = torch.mean(values_tensor)
+        std_val = torch.std(values_tensor)
+        
+        if std_val < 1e-6:
+            logger.warning(f"Near-zero standard deviation for metric: {metric}. Using zero z-scores")
+            for ticker in tickers:
+                z_scores[ticker][metric] = 0.0
+            continue
+        
+        if len(values) > 4:
+            try:
+                # Calculate skewness
+                skewness = torch.mean(((values_tensor - mean_val) / std_val) ** 3).item()
+                
+                if abs(skewness) > 2:
+                    # Use robust statistics for skewed data
+                    median_val = torch.median(values_tensor)
+                    q1 = torch.quantile(values_tensor, 0.25)
+                    q3 = torch.quantile(values_tensor, 0.75)
+                    iqr = q3 - q1
+                    robust_std = max((iqr / 1.349).item(), 1e-6)
+                    metric_z_scores = (values_tensor - median_val) / robust_std
+                    logger.debug(f"Using robust z-scores for {metric} due to skewness: {skewness:.2f}")
+                else:
+                    # Use standard z-score for normally distributed data
+                    metric_z_scores = (values_tensor - mean_val) / std_val
+            except Exception as e:
+                logger.warning(f"Error calculating skewness for {metric}: {e}. Using standard z-scores.")
+                metric_z_scores = (values_tensor - mean_val) / std_val
+        else:
+            # Standard approach for small samples
+            metric_z_scores = (values_tensor - mean_val) / std_val
+        
+        # Clamp z-scores to prevent extreme outliers
         metric_z_scores = torch.clamp(metric_z_scores, -3.0, 3.0)
         
         # Assign z-scores to tickers
@@ -536,11 +555,33 @@ def ensure_essential_z_scores(raw_metrics, z_scores, weights_dicts):
     for weights_dict in weights_dicts:
         essential_metrics.update(weights_dict.keys())
     
+    logger.debug(f"Ensuring z-scores for {len(essential_metrics)} essential metrics")
+    
+    # Initialize metric counters
+    filled_count = 0
+    present_count = 0
+    
     # Ensure each ticker has all essential metrics
     for ticker in z_scores:
+        ticker_present = 0
+        ticker_filled = 0
+        
         for metric in essential_metrics:
-            if metric not in z_scores[ticker]:
+            if metric in z_scores[ticker]:
+                ticker_present += 1
+            else:
                 z_scores[ticker][metric] = 0.0
+                ticker_filled += 1
+        
+        present_count += ticker_present
+        filled_count += ticker_filled
+        
+        if ticker_filled > 0:
+            logger.debug(f"Added {ticker_filled} missing metrics for {ticker}")
+    
+    if filled_count > 0:
+        logger.warning(f"Added {filled_count} missing z-scores across all tickers")
+    logger.info(f"Z-score coverage: {present_count} present, {filled_count} filled")
     
     return z_scores
 
