@@ -1,0 +1,17 @@
+openbb
+numpy
+pandas
+scipy
+torch
+tensorflow
+tensorflow-metal
+rich
+tqdm
+matplotlib
+asyncio
+aiohttp
+scikit-learn
+statsmodels
+pyyaml
+loguru
+fire
