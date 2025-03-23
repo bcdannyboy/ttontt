@@ -1,7 +1,10 @@
 import asyncio
 
 import concurrent
-from src.screener import fundamentals, technicals
+from src.screener import technicals
+from src.screener.fundamentals.fundamentals_peers import gather_peer_analysis
+from src.screener.fundamentals.fundamentals_report import generate_stock_report
+from src.screener.fundamentals.fundamentals_screen import screen_stocks
 from src.simulation import montecarlo 
 import json
 import os
@@ -74,7 +77,7 @@ def generate_stock_report_task(ticker, score, details):
         dict: A complete stock report with screening scores and peer analysis.
     """
     try:
-        report = fundamentals.generate_stock_report(ticker)
+        report = generate_stock_report(ticker)
         report['category_scores'] = details['category_scores']
         report['composite_score'] = float(score)
         # Include peer analysis in the report.
@@ -475,7 +478,7 @@ def perform_stock_screening(tickers, batch_size=10):
         for i in range(0, len(tickers), batch_size):
             batch = tickers[i:i+batch_size]
             logger.info(f"Processing batch {i//batch_size + 1}/{(len(tickers) + batch_size - 1)//batch_size} ({len(batch)} tickers)")
-            batch_results = fundamentals.screen_stocks(batch)
+            batch_results = screen_stocks(batch)
             all_results.extend(batch_results)
             if i + batch_size < len(tickers):
                 time.sleep(2)
@@ -504,7 +507,7 @@ def perform_stock_screening(tickers, batch_size=10):
             
             # Execute the peer analysis within this loop by correctly referencing the function
             try:
-                peer_data_dict = loop.run_until_complete(fundamentals.gather_peer_analysis(tickers_to_analyze))
+                peer_data_dict = loop.run_until_complete(gather_peer_analysis(tickers_to_analyze))
             except Exception as inner_e:
                 logger.error(f"Error during peer analysis execution: {inner_e}")
                 logger.debug(traceback.format_exc())
