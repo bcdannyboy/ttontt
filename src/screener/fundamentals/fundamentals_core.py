@@ -5,6 +5,8 @@ import asyncio
 import logging
 import numpy as np
 import torch
+import json
+from datetime import datetime, timedelta
 
 # Set seed for reproducibility with both numpy and torch
 np.random.seed(42)
@@ -94,18 +96,54 @@ ANALYST_ESTIMATES_WEIGHTS = {
     'estimate_revision_momentum': 0.20
 }
 
-# API rate limiting
-API_CALLS_PER_MINUTE = 240
-api_semaphore = asyncio.Semaphore(40)  # Allow 40 concurrent API calls
-api_call_timestamps = []
-api_lock = threading.RLock()
+# API rate limiting with proper per-provider limits
+API_CALLS_PER_MINUTE = {
+    'default': 240,
+    'fmp': 300,
+    'intrinio': 100,
+    'yfinance': 2000,
+    'polygon': 50,
+    'alphavantage': 75
+}
+
+# Create separate semaphores for each provider for better control
+api_semaphores = {
+    'default': asyncio.Semaphore(40),
+    'fmp': asyncio.Semaphore(50),
+    'intrinio': asyncio.Semaphore(20),
+    'yfinance': asyncio.Semaphore(100),
+    'polygon': asyncio.Semaphore(10),
+    'alphavantage': asyncio.Semaphore(15)
+}
+
+# Track API calls per provider
+api_call_timestamps = {
+    'default': [],
+    'fmp': [],
+    'intrinio': [],
+    'yfinance': [],
+    'polygon': [],
+    'alphavantage': []
+}
+api_locks = {
+    provider: threading.RLock() for provider in api_call_timestamps.keys()
+}
 
 # Cache for API results with proper locking to avoid race conditions
-CACHE_SIZE = 1000
+CACHE_SIZE = 5000  # Increased cache size
 api_cache = {}
 api_cache_lock = threading.RLock()
 metrics_cache = {}
 metrics_cache_lock = threading.RLock()
+
+# Create a cache directory
+CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+def get_cache_path(key_type, key):
+    """Get path for cached data file"""
+    safe_key = ''.join(c if c.isalnum() else '_' for c in key)
+    return os.path.join(CACHE_DIR, f"{key_type}_{safe_key}_cache.json")
 
 def get_openbb_client():
     """Returns a thread-local OpenBB client instance."""
@@ -114,29 +152,74 @@ def get_openbb_client():
         thread_local.openbb_client = obb
     return thread_local.openbb_client
 
-async def rate_limited_api_call(func, *args, **kwargs):
+async def rate_limited_api_call(func, *args, provider='default', cache_ttl=86400, **kwargs):
     """
-    Rate limiting for API calls with async support and caching.
+    Rate limiting for API calls with async support, caching, and provider-specific limits.
+    
+    Args:
+        func: The API function to call
+        provider: The data provider to use (default, fmp, intrinio, etc.)
+        cache_ttl: Cache time-to-live in seconds (default 24 hours)
+        *args, **kwargs: Arguments to pass to the API function
+    
+    Returns:
+        The API response or cached response
     """
+    # Create a cache key from function name and arguments
     cache_key = f"{func.__name__}_{str(args)}_{str(kwargs)}"
     
-    # Check cache with proper locking
+    # Check memory cache first
     with api_cache_lock:
         if cache_key in api_cache:
-            return api_cache[cache_key]
+            cache_entry = api_cache[cache_key]
+            # Check if cache entry is still valid
+            if datetime.now().timestamp() - cache_entry['timestamp'] < cache_ttl:
+                return cache_entry['data']
     
-    async with api_semaphore:
-        with api_lock:
-            current_time = time.time()
-            global api_call_timestamps
-            api_call_timestamps = [ts for ts in api_call_timestamps if current_time - ts < 60]
-            if len(api_call_timestamps) >= API_CALLS_PER_MINUTE:
-                sleep_time = 60 - (current_time - api_call_timestamps[0])
-                if sleep_time > 0:
-                    logger.debug(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds")
-                    await asyncio.sleep(sleep_time)
-            api_call_timestamps.append(time.time())
+    # Check disk cache
+    cache_file = get_cache_path('api', cache_key.replace('/', '_').replace('\\', '_')[:100])
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                cache_data = json.load(f)
+                if datetime.now().timestamp() - cache_data.get('timestamp', 0) < cache_ttl:
+                    # Update memory cache with disk data
+                    with api_cache_lock:
+                        api_cache[cache_key] = {
+                            'data': cache_data['data'],
+                            'timestamp': cache_data['timestamp']
+                        }
+                        return cache_data['data']
+        except Exception as e:
+            logger.warning(f"Error reading API cache: {e}")
+    
+    # Use the appropriate semaphore based on provider
+    semaphore = api_semaphores.get(provider, api_semaphores['default'])
+    
+    async with semaphore:
+        # Apply rate limiting based on provider
+        provider_key = provider if provider in api_locks else 'default'
+        rate_limit = API_CALLS_PER_MINUTE.get(provider_key, API_CALLS_PER_MINUTE['default'])
         
+        with api_locks[provider_key]:
+            current_time = time.time()
+            # Filter out timestamps older than 60 seconds
+            api_call_timestamps[provider_key] = [
+                ts for ts in api_call_timestamps[provider_key] 
+                if current_time - ts < 60
+            ]
+            
+            # Check if we've reached the rate limit
+            if len(api_call_timestamps[provider_key]) >= rate_limit:
+                wait_time = 60 - (current_time - api_call_timestamps[provider_key][0])
+                if wait_time > 0:
+                    logger.debug(f"Rate limit reached for {provider_key}, waiting {wait_time:.2f}s")
+                    await asyncio.sleep(wait_time)
+            
+            # Add current timestamp to the list
+            api_call_timestamps[provider_key].append(time.time())
+        
+        # Execute the API call
         try:
             if asyncio.iscoroutinefunction(func):
                 result = await func(*args, **kwargs)
@@ -144,17 +227,49 @@ async def rate_limited_api_call(func, *args, **kwargs):
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(None, lambda: func(*args, **kwargs))
             
-            # Update cache with proper locking
+            # Update caches with the result
             with api_cache_lock:
-                api_cache[cache_key] = result
+                api_cache[cache_key] = {
+                    'data': result,
+                    'timestamp': datetime.now().timestamp()
+                }
+                
+                # Prune memory cache if too large
                 if len(api_cache) > CACHE_SIZE:
-                    oldest_key = next(iter(api_cache))
-                    del api_cache[oldest_key]
+                    # Find oldest entries
+                    oldest_keys = sorted(
+                        api_cache.keys(),
+                        key=lambda k: api_cache[k]['timestamp']
+                    )[:len(api_cache) // 10]  # Remove 10% of oldest entries
+                    
+                    # Remove oldest entries
+                    for key in oldest_keys:
+                        del api_cache[key]
+            
+            # Save to disk cache
+            try:
+                with open(cache_file, 'w') as f:
+                    json.dump({
+                        'data': result if not hasattr(result, '__dict__') else result.__dict__,
+                        'timestamp': datetime.now().timestamp()
+                    }, f, default=lambda o: str(o) if hasattr(o, '__dict__') else o.__dict__ if hasattr(o, '__dict__') else str(o))
+            except Exception as e:
+                logger.warning(f"Error writing API cache to disk: {e}")
             
             return result
+        
         except Exception as e:
-            logger.error(f"API call error: {e}")
-            raise
+            # Check if error is about subscription/access
+            error_str = str(e).lower()
+            if any(term in error_str for term in ['subscription', 'access', 'api key', 'unauthorized']):
+                logger.error(f"API authentication/subscription error for {provider}: {e}")
+                raise Exception(f"API call error: \n[Error] -> Error in {provider} request -> An active subscription is required to view this data.")
+            elif 'no results' in error_str or 'not found' in error_str:
+                logger.error(f"No results found for API call: {e}")
+                raise Exception(f"API call error: \n[Empty] -> No results found. Try adjusting the query parameters.")
+            else:
+                logger.error(f"API call error: {e}")
+                raise
 
 def select_valid_record(records, key, min_value=0.001):
     """

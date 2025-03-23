@@ -106,22 +106,54 @@ async def gather_peer_analysis(tickers: list):
     np.random.seed(42)
     import torch
     torch.manual_seed(42)
+    
     visited = set()
-    tasks = [analyze_ticker_with_peers(ticker, depth=1, visited=visited) for ticker in tickers]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
     peer_analysis = {}
-    for i, ticker in enumerate(tickers):
-        if isinstance(results[i], Exception):
-            logger.error(f"Error in peer analysis for {ticker}: {results[i]}")
-            peer_analysis[ticker] = {
-                'peer_comparison': {
-                    'average_score': 0.0,
-                    'std_dev': 0.0,
-                    'count': 0,
-                    'percentile': 0.0
-                },
-                'peers': []
-            }
-        else:
-            peer_analysis[ticker] = results[i]
+    
+    # Process tickers in smaller batches to avoid overwhelming the event loop
+    batch_size = 10
+    
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i:i+batch_size]
+        batch_tasks = []
+        
+        for ticker in batch:
+            if ticker in visited:
+                continue
+            batch_tasks.append(analyze_ticker_with_peers(ticker, depth=1, visited=visited))
+        
+        # Process this batch in parallel if there are tasks
+        if batch_tasks:
+            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            
+            # Process results
+            batch_idx = 0
+            for j, ticker in enumerate(batch):
+                if ticker in visited and ticker not in peer_analysis:
+                    continue
+                
+                if batch_idx >= len(batch_results):
+                    continue  # Skip if no result for this ticker
+                    
+                result = batch_results[batch_idx]
+                batch_idx += 1
+                
+                if isinstance(result, Exception):
+                    logger.error(f"Error in peer analysis for {ticker}: {result}")
+                    peer_analysis[ticker] = {
+                        'peer_comparison': {
+                            'average_score': 0.0,
+                            'std_dev': 0.0,
+                            'count': 0,
+                            'percentile': 0.0
+                        },
+                        'peers': []
+                    }
+                else:
+                    peer_analysis[ticker] = result
+        
+        # Small delay between batches to prevent rate limiting
+        if i + batch_size < len(tickers):
+            await asyncio.sleep(0.5)
+    
     return peer_analysis

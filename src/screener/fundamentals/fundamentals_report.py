@@ -4,7 +4,7 @@ from datetime import datetime
 import numpy as np
 import torch
 from src.screener.fundamentals.fundamentals_core import get_openbb_client
-from src.screener.fundamentals.fundamentals_metrics import extract_metrics_from_financial_data, construct_earnings_from_income
+from src.screener.fundamentals.fundamentals_metrics import extract_metrics_from_financial_data, construct_earnings_from_income, calculate_estimate_accuracy, get_attribute_value
 
 logger = logging.getLogger(__name__)
 
@@ -106,18 +106,18 @@ def generate_stock_report(ticker: str) -> dict:
             financial_data['earnings'] = construct_earnings_from_income(financial_data['income'])
     except Exception as e:
         logger.error(f"Error fetching financial data for {ticker}: {e}")
-    from fundamentals_metrics import extract_metrics_from_financial_data
+    
     metrics = extract_metrics_from_financial_data(financial_data)
     estimate_accuracy = {}
     if financial_data.get('historical_estimates') and financial_data.get('earnings'):
-        from fundamentals_metrics import calculate_estimate_accuracy
         estimate_accuracy = calculate_estimate_accuracy(
             financial_data['historical_estimates'],
             financial_data['earnings']
         )
     ticker_results = None
     try:
-        from fundamentals_screen import screen_stocks
+        # Import inside function to avoid circular dependency
+        from src.screener.fundamentals.fundamentals_screen import screen_stocks
         ticker_results = screen_stocks([ticker], max_workers=1)
     except Exception as e:
         logger.error(f"Error screening ticker {ticker}: {e}")

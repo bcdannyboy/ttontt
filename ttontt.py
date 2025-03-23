@@ -189,34 +189,42 @@ def run_comprehensive_monte_carlo_analysis(tickers, technical_results, max_worke
     ) as progress:
         task = progress.add_task("Generating Monte Carlo simulations...", total=len(tickers))
         
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_ticker = {}
+        # Process tickers in batches to prevent too many event loops
+        valid_tickers = [t for t in tickers if t in tech_details]
+        batch_size = min(10, len(valid_tickers))
+        
+        for i in range(0, len(valid_tickers), batch_size):
+            batch = valid_tickers[i:i+batch_size]
+            batch_reports = []
             
-            # Submit Monte Carlo simulation tasks
-            for ticker in tickers:
-                if ticker in tech_details:
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as executor:
+                futures = {}
+                
+                # Submit Monte Carlo simulation tasks
+                for ticker in batch:
                     score, details = tech_details[ticker]
                     future = executor.submit(generate_monte_carlo_report_task, ticker, score, details)
-                    future_to_ticker[future] = ticker
-                else:
-                    # If no technical details available, continue
-                    logger.warning(f"No technical analysis results for {ticker}. Skipping Monte Carlo simulation.")
-                    continue
-            
-            # Process results as they complete
-            for future in tqdm(concurrent.futures.as_completed(future_to_ticker), 
-                              total=len(future_to_ticker), 
-                              desc="Generating Monte Carlo simulations", 
-                              leave=False):
-                ticker = future_to_ticker[future]
-                try:
-                    mc_report = future.result()
-                    mc_reports.append(mc_report)
-                except Exception as e:
-                    logger.error(f"Error generating Monte Carlo report for {ticker}: {e}")
-                    logger.error(traceback.format_exc())
+                    futures[future] = ticker
                 
-                progress.update(task, advance=1)
+                # Process results as they complete
+                for future in concurrent.futures.as_completed(futures):
+                    ticker = futures[future]
+                    try:
+                        mc_report = future.result()
+                        if mc_report:
+                            batch_reports.append(mc_report)
+                    except Exception as e:
+                        logger.error(f"Error generating Monte Carlo report for {ticker}: {e}")
+                        logger.error(traceback.format_exc())
+                    
+                    progress.update(task, advance=1)
+            
+            # Add batch results to overall results
+            mc_reports.extend(batch_reports)
+            
+            # Small delay between batches
+            if i + batch_size < len(valid_tickers):
+                time.sleep(1)
     
     return mc_reports
 
@@ -325,8 +333,11 @@ def generate_monte_carlo_report_task(ticker: str, score: float, details: dict) -
         # Run calibration
         calibration_success = False
         try:
-            # Calibrate the model parameters
-            calibration_success = asyncio.run(simulator.calibrate_model_parameters())
+            # Calibrate the model parameters in a safely isolated manner
+            async def run_calibration():
+                return await simulator.calibrate_model_parameters()
+            
+            calibration_success = run_async_in_new_loop(run_calibration())
             
             if not calibration_success:
                 logger.warning(f"Failed to calibrate model for {ticker}. Cannot run simulation.")
@@ -355,8 +366,11 @@ def generate_monte_carlo_report_task(ticker: str, score: float, details: dict) -
         
         # Run simulation
         try:
-            # Run the simulation
-            simulation_results = asyncio.run(simulator.run_simulation())
+            # Run the simulation in a safely isolated manner
+            async def run_simulation():
+                return await simulator.run_simulation()
+            
+            simulation_results = run_async_in_new_loop(run_simulation())
             
             if not simulation_results:
                 logger.warning(f"No simulation results for {ticker}")
@@ -466,6 +480,27 @@ def generate_monte_carlo_report_task(ticker: str, score: float, details: dict) -
             "monte_carlo_error": str(e)
         }
 
+def run_async_in_new_loop(coro):
+    """
+    Safely run an async coroutine in a new event loop.
+    This function can be called from sync code to execute an async coroutine.
+    """
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        try:
+            # Cleanup any remaining tasks
+            pending = asyncio.all_tasks(loop)
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        except Exception as e:
+            logger.warning(f"Error cleaning up tasks: {e}")
+        finally:
+            loop.close()
+
 def perform_stock_screening(tickers, batch_size=10):
     """
     Screen stocks by first computing fundamental composite scores and then adjusting
@@ -499,22 +534,18 @@ def perform_stock_screening(tickers, batch_size=10):
         # Set up peer data dictionary
         peer_data_dict = {}
         
-        # Run peer analysis in a dedicated event loop
+        # Run peer analysis safely
         try:
-            # Important: Create and use a new event loop specifically for peer analysis
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            from src.screener.fundamentals.fundamentals_peers import gather_peer_analysis
             
-            # Execute the peer analysis within this loop by correctly referencing the function
-            try:
-                peer_data_dict = loop.run_until_complete(gather_peer_analysis(tickers_to_analyze))
-            except Exception as inner_e:
-                logger.error(f"Error during peer analysis execution: {inner_e}")
-                logger.debug(traceback.format_exc())
-            finally:
-                loop.close()
-        except Exception as outer_e:
-            logger.error(f"Error setting up peer analysis loop: {outer_e}")
+            async def run_peer_analysis():
+                return await gather_peer_analysis(tickers_to_analyze)
+            
+            # Run in a completely new event loop
+            peer_data_dict = run_async_in_new_loop(run_peer_analysis())
+            
+        except Exception as e:
+            logger.error(f"Error during peer analysis: {e}")
             logger.debug(traceback.format_exc())
         
         # Peer weight determines how much to adjust scores based on peer comparison
