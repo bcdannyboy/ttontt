@@ -1,5 +1,4 @@
 import asyncio
-
 import concurrent
 from src.screener import technicals
 from src.screener.fundamentals.fundamentals_peers import gather_peer_analysis
@@ -34,6 +33,9 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger('ttontt')
+
+# Create a list to store all tables for display at the end
+all_tables = []
 
 # Optional GPU check: using TensorFlow with macOS optimizations
 try:
@@ -635,17 +637,17 @@ if __name__ == "__main__":
         results.sort(key=lambda x: x[1], reverse=True)
         
         rich_console = Console()
-        rich_console.print("\n[bold]Fundamental Screening Results:[/bold]")
-        rich_console.print("-----------------------------")
         
-        table = Table(title="Stock Scores")
-        table.add_column("Ticker", style="cyan")
-        table.add_column("Score", justify="right", style="green")
+        # Create the first table without printing
+        stock_scores_table = Table(title="Stock Scores")
+        stock_scores_table.add_column("Ticker", style="cyan")
+        stock_scores_table.add_column("Score", justify="right", style="green")
         
         for ticker, score, _ in results:
-            table.add_row(ticker, f"{score:.8f}")
+            stock_scores_table.add_row(ticker, f"{score:.8f}")
             
-        rich_console.print(table)
+        # Add table to our collection
+        all_tables.append(("Fundamental Screening Results", stock_scores_table))
         
         json_data = {
             "screening_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -653,7 +655,7 @@ if __name__ == "__main__":
             "stocks": []
         }
         
-        rich_console.print("\n[bold]Generating detailed reports...[/bold]")
+        logger.info("Generating detailed reports...")
         stock_reports = []
         
         with Progress(
@@ -688,9 +690,9 @@ if __name__ == "__main__":
             
         output_filename = save_results_to_json(json_data)
         if output_filename:
-            rich_console.print(f"\n[bold green]Results saved to {output_filename}[/bold green]")
+            logger.info(f"Results saved to {output_filename}")
         else:
-            rich_console.print("\n[bold red]Error saving results to file. Check logs for details.[/bold red]")
+            logger.error("Error saving results to file. Check logs for details.")
             
         try:
             scores = [score for _, score, _ in results]
@@ -701,12 +703,10 @@ if __name__ == "__main__":
             bottom_quartile = [(ticker, score, details) for ticker, score, details in results if score <= q1]
             top_quartile.sort(key=lambda x: x[1], reverse=True)
             bottom_quartile.sort(key=lambda x: x[1])
-            
-            rich_console.print("\n[bold]Fundamental Quartile Analysis:[/bold]")
-            
+                
+            # Create and store the quartile tables instead of printing
             if top_quartile:
                 categories = list(top_quartile[0][2]['category_scores'].keys())
-                # Create table with additional peer columns.
                 table_top = Table(title="Top Quartile Stocks")
                 table_top.add_column("Ticker", style="cyan")
                 table_top.add_column("Score", justify="right", style="green")
@@ -745,9 +745,11 @@ if __name__ == "__main__":
                         row.append(f"{peer_delta:.8f}")
                         table_bottom.add_row(*row)
                     
-                    rich_console.print(Columns([table_top, table_bottom]))
+                    # Store both tables as columns in our collection
+                    all_tables.append(("Fundamental Quartile Analysis", Columns([table_top, table_bottom])))
                 else:
-                    rich_console.print(table_top)
+                    # Store just the top table in our collection
+                    all_tables.append(("Fundamental Quartile Analysis", table_top))
             elif bottom_quartile:
                 categories = list(bottom_quartile[0][2]['category_scores'].keys())
                 table_bottom = Table(title="Bottom Quartile Stocks")
@@ -768,13 +770,14 @@ if __name__ == "__main__":
                     row.append(f"{peer_delta:.8f}")
                     table_bottom.add_row(*row)
                 
-                rich_console.print(table_bottom)
+                # Store the bottom table in our collection
+                all_tables.append(("Fundamental Quartile Analysis", table_bottom))
             else:
-                rich_console.print("No quartile analysis available.")
+                logger.info("No quartile analysis available.")
             
             # --- Technical Analysis on Fundamental Quartiles ---
             if top_quartile or bottom_quartile:
-                rich_console.print("\n[bold]Technical Analysis on Fundamental Quartiles:[/bold]")
+                logger.info("Starting Technical Analysis on Fundamental Quartiles...")
                 
                 # Create a mapping for fundamental group membership
                 fundamental_group = {}
@@ -802,7 +805,7 @@ if __name__ == "__main__":
                         "stocks": []
                     }
                     
-                    rich_console.print("\n[bold]Generating technical reports...[/bold]")
+                    logger.info("Generating technical reports...")
                     tech_reports = []
                     
                     with Progress(
@@ -836,7 +839,7 @@ if __name__ == "__main__":
                         tech_json["stocks"].append(tech_data)
                     
                     # Generate Monte Carlo reports
-                    rich_console.print("\n[bold]Generating Monte Carlo simulations...[/bold]")
+                    logger.info("Generating Monte Carlo simulations...")
                     mc_reports = []
                     
                     with Progress(
@@ -875,16 +878,16 @@ if __name__ == "__main__":
                     # Save Monte Carlo results
                     mc_output_filename = save_results_to_json(monte_carlo_json, filename_prefix="monte_carlo_screening")
                     if mc_output_filename:
-                        rich_console.print(f"\n[bold green]Monte Carlo results saved to {mc_output_filename}[/bold green]")
+                        logger.info(f"Monte Carlo results saved to {mc_output_filename}")
                     else:
-                        rich_console.print("\n[bold red]Error saving Monte Carlo results to file. Check logs for details.[/bold red]")
+                        logger.error("Error saving Monte Carlo results to file. Check logs for details.")
                     
                     # Also save the technical results
                     tech_output_filename = save_results_to_json(tech_json, filename_prefix="technical_screening")
                     if tech_output_filename:
-                        rich_console.print(f"\n[bold green]Technical results saved to {tech_output_filename}[/bold green]")
+                        logger.info(f"Technical results saved to {tech_output_filename}")
                     else:
-                        rich_console.print("\n[bold red]Error saving technical results to file. Check logs for details.[/bold red]")
+                        logger.error("Error saving technical results to file. Check logs for details.")
                     
                     # Create mapping for fast lookup of reports by ticker
                     tech_reports_map = {r["ticker"]: r for r in tech_reports}
@@ -904,7 +907,6 @@ if __name__ == "__main__":
                         tech_top_top_quartile.sort(key=lambda x: x[1], reverse=True)
                         tech_top_bottom_quartile.sort(key=lambda x: x[1])
                         
-                        rich_console.print("\n[bold]Technical Analysis for Top Fundamental Stocks:[/bold]")
                         tech_categories = list(tech_results_top[0][2]['category_scores'].keys())
                         
                         # For the top technical quartile of top fundamental stocks
@@ -976,7 +978,8 @@ if __name__ == "__main__":
                             
                             table_tech_top_top.add_row(*row)
                         
-                        rich_console.print(table_tech_top_top)
+                        # Add the table to our collection
+                        all_tables.append(("Technical Analysis for Top Fundamental Stocks - Top Technical Quartile", table_tech_top_top))
                         
                         # Create second table for bottom technical quartile, top fundamentals
                         table_tech_top_bottom = Table(title="Bottom Technical Quartile (Top Fundamentals)")
@@ -1047,7 +1050,8 @@ if __name__ == "__main__":
                             
                             table_tech_top_bottom.add_row(*row)
                         
-                        rich_console.print(table_tech_top_bottom)
+                        # Add the table to our collection
+                        all_tables.append(("Technical Analysis for Top Fundamental Stocks - Bottom Technical Quartile", table_tech_top_bottom))
                     
                     # Process technical quartiles for bottom fundamental group
                     if tech_results_bottom:
@@ -1059,7 +1063,6 @@ if __name__ == "__main__":
                         tech_bottom_top_quartile.sort(key=lambda x: x[1], reverse=True)
                         tech_bottom_bottom_quartile.sort(key=lambda x: x[1])
                         
-                        rich_console.print("\n[bold]Technical Analysis for Bottom Fundamental Stocks:[/bold]")
                         tech_categories = list(tech_results_bottom[0][2]['category_scores'].keys())
                         
                         # Create enhanced table with consistent Monte Carlo columns
@@ -1131,7 +1134,8 @@ if __name__ == "__main__":
                             
                             table_tech_bottom_top.add_row(*row)
                         
-                        rich_console.print(table_tech_bottom_top)
+                        # Add the table to our collection
+                        all_tables.append(("Technical Analysis for Bottom Fundamental Stocks - Top Technical Quartile", table_tech_bottom_top))
                         
                         # Create final table for bottom technical quartile, bottom fundamentals
                         table_tech_bottom_bottom = Table(title="Bottom Technical Quartile (Bottom Fundamentals)")
@@ -1202,16 +1206,35 @@ if __name__ == "__main__":
                             
                             table_tech_bottom_bottom.add_row(*row)
                         
-                        rich_console.print(table_tech_bottom_bottom)
+                        # Add the table to our collection
+                        all_tables.append(("Technical Analysis for Bottom Fundamental Stocks - Bottom Technical Quartile", table_tech_bottom_bottom))
                 else:
-                    rich_console.print("[bold red]No valid stocks were successfully screened with technical indicators.[/bold red]")
+                    logger.error("No valid stocks were successfully screened with technical indicators.")
             else:
-                rich_console.print("No fundamental quartiles available for technical analysis.")
+                logger.info("No fundamental quartiles available for technical analysis.")
 
+            # =====================================================================
+            # DISPLAY ALL TABLES AT THE END
+            # =====================================================================
+            logger.info("============= ALL ANALYSIS COMPLETED =============")
+            logger.info(f"Processing completed in {datetime.now()-start}")
+            
+            # Print a visual separator
+            rich_console.print("\n" + "="*80)
+            rich_console.print("[bold cyan]ANALYSIS RESULTS[/bold cyan]")
+            rich_console.print("="*80 + "\n")
+            
+            # Print all tables that were collected
+            for title, table in all_tables:
+                rich_console.print(f"\n[bold]{title}:[/bold]")
+                rich_console.print("-----------------------------")
+                rich_console.print(table)
+                rich_console.print("\n")
+                
         except Exception as e:
             logger.error(f"Error calculating quartiles: {e}")
             logger.debug(traceback.format_exc())
-            rich_console.print("\n[bold red]Error displaying quartile analysis. Check logs for details.[/bold red]")
+            logger.error("Error displaying quartile analysis. Check logs for details.")
             
     except KeyboardInterrupt:
         print("\nProcess interrupted by user. Exiting...")
@@ -1224,4 +1247,3 @@ if __name__ == "__main__":
 
     end = datetime.now()
     print(f"time to completion: {end-start}")
-
