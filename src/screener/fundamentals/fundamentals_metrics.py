@@ -346,6 +346,7 @@ def extract_metrics_from_financial_data(financial_data):
         else:
             metrics['dividend_yield'] = 0
     
+    # Initialize analyst estimate metrics to zero
     metrics['estimate_eps_accuracy'] = 0
     metrics['estimate_revenue_accuracy'] = 0
     metrics['estimate_ebitda_accuracy'] = 0
@@ -358,6 +359,7 @@ def extract_metrics_from_financial_data(financial_data):
     metrics['forward_sales_revision_momentum'] = 0
     metrics['forward_ebitda_revision_momentum'] = 0
     
+    # Calculate historical estimate accuracy if data is available
     if isinstance(financial_data, dict) and financial_data.get('historical_estimates') and financial_data.get('earnings'):
         try:
             accuracy_metrics = calculate_estimate_accuracy(
@@ -369,12 +371,17 @@ def extract_metrics_from_financial_data(financial_data):
             logger.error(f"Error calculating estimate accuracy: {e}")
             logger.error(traceback.format_exc())
     
+    # Process forward sales estimates
+    forward_sales_deviation = 0
+    forward_sales_momentum = 0
     if isinstance(financial_data, dict) and financial_data.get('forward_sales'):
         try:
             if financial_data['forward_sales']:
                 latest_estimate = financial_data['forward_sales'][0]
-                metrics['forward_sales_consensus_deviation'] = calculate_consensus_deviation(latest_estimate)
-                metrics['forward_sales_revision_momentum'] = calculate_estimate_revision_momentum(financial_data['forward_sales'])
+                forward_sales_deviation = calculate_consensus_deviation(latest_estimate)
+                metrics['forward_sales_consensus_deviation'] = forward_sales_deviation
+                forward_sales_momentum = calculate_estimate_revision_momentum(financial_data['forward_sales'])
+                metrics['forward_sales_revision_momentum'] = forward_sales_momentum
                 if 'revenue' in metrics and metrics['revenue'] > 0:
                     forward_revenue = get_attribute_value(latest_estimate, 'mean')
                     if forward_revenue and np.isfinite(forward_revenue):
@@ -383,12 +390,17 @@ def extract_metrics_from_financial_data(financial_data):
         except Exception as e:
             logger.warning(f"Error processing forward sales data: {e}")
     
+    # Process forward EBITDA estimates
+    forward_ebitda_deviation = 0
+    forward_ebitda_momentum = 0
     if isinstance(financial_data, dict) and financial_data.get('forward_ebitda'):
         try:
             if financial_data['forward_ebitda']:
                 latest_estimate = financial_data['forward_ebitda'][0]
-                metrics['forward_ebitda_consensus_deviation'] = calculate_consensus_deviation(latest_estimate)
-                metrics['forward_ebitda_revision_momentum'] = calculate_estimate_revision_momentum(financial_data['forward_ebitda'])
+                forward_ebitda_deviation = calculate_consensus_deviation(latest_estimate)
+                metrics['forward_ebitda_consensus_deviation'] = forward_ebitda_deviation
+                forward_ebitda_momentum = calculate_estimate_revision_momentum(financial_data['forward_ebitda'])
+                metrics['forward_ebitda_revision_momentum'] = forward_ebitda_momentum
                 if 'ebitda' in metrics and metrics['ebitda'] > 0:
                     forward_ebitda = get_attribute_value(latest_estimate, 'mean')
                     if forward_ebitda and np.isfinite(forward_ebitda):
@@ -397,6 +409,13 @@ def extract_metrics_from_financial_data(financial_data):
         except Exception as e:
             logger.warning(f"Error processing forward EBITDA data: {e}")
     
+    # Set the composite estimate metrics using forward data
+    # This is the key fix: we need to populate the estimate_* metrics used in ANALYST_ESTIMATES_WEIGHTS
+    # We'll use the maximum of the sales and EBITDA values to ensure we don't miss important signals
+    metrics['estimate_consensus_deviation'] = max(abs(forward_sales_deviation), abs(forward_ebitda_deviation))
+    metrics['estimate_revision_momentum'] = max(forward_sales_momentum, forward_ebitda_momentum, key=abs)
+    
+    # Final validation for all metrics
     for key in list(metrics.keys()):
         if metrics[key] is not None:
             try:
