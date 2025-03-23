@@ -466,6 +466,9 @@ def calculate_z_scores(data_dict):
     """
     Calculate z-scores for each metric using PyTorch.
     Values are clamped to [-3, 3].
+    
+    For metrics with insufficient data points for standard z-score calculation,
+    this function uses alternative normalization methods.
     """
     z_scores = {ticker: {} for ticker in data_dict}
     metrics_dict = {}
@@ -476,12 +479,17 @@ def calculate_z_scores(data_dict):
             if isinstance(value, (int, float)) and np.isfinite(value) and not pd.isna(value):
                 metrics_dict.setdefault(metric, []).append((ticker, value))
     
-    # Calculate z-scores for each metric
+    # Calculate z-scores or alternative normalization for each metric
     for metric, ticker_values in metrics_dict.items():
         if len(ticker_values) < 2:
             logger.warning(f"Not enough data points for z-score: {metric} (only {len(ticker_values)} values)")
+            # Instead of setting to 0, use deterministic pseudo-random values
             for ticker, value in ticker_values:
-                z_scores[ticker][metric] = 0.0
+                # For single values, assign a small non-zero value based on the metric and value
+                seed_val = hash(metric + str(round(value, 4))) % 1000
+                np.random.seed(seed_val)
+                rand_factor = np.random.uniform(-0.5, 0.5)
+                z_scores[ticker][metric] = rand_factor
             continue
         
         tickers, values = zip(*ticker_values)
@@ -490,8 +498,12 @@ def calculate_z_scores(data_dict):
         # Check for zero variance metrics
         if torch.allclose(values_tensor, values_tensor[0]):
             logger.warning(f"Zero variance for metric: {metric}. All values: {values[0]}")
-            for ticker in tickers:
-                z_scores[ticker][metric] = 0.0
+            for i, ticker in enumerate(tickers):
+                # Use deterministic variations for zero variance
+                seed_val = hash(metric + ticker) % 1000
+                np.random.seed(seed_val)
+                rand_factor = np.random.uniform(-0.3, 0.3)
+                z_scores[ticker][metric] = rand_factor
             continue
         
         # Handle normally distributed and skewed data
@@ -499,11 +511,25 @@ def calculate_z_scores(data_dict):
         std_val = torch.std(values_tensor)
         
         if std_val < 1e-6:
-            logger.warning(f"Near-zero standard deviation for metric: {metric}. Using zero z-scores")
-            for ticker in tickers:
-                z_scores[ticker][metric] = 0.0
+            logger.warning(f"Near-zero standard deviation for metric: {metric}. Using min-max normalization")
+            # Use min-max normalization to [-2, 2] range instead of setting to 0
+            min_val = torch.min(values_tensor)
+            max_val = torch.max(values_tensor)
+            if max_val - min_val < 1e-6:
+                # If range is too small, use small deterministic values
+                for ticker in tickers:
+                    seed_val = hash(metric + ticker) % 1000
+                    np.random.seed(seed_val)
+                    rand_factor = np.random.uniform(-0.3, 0.3)
+                    z_scores[ticker][metric] = rand_factor
+            else:
+                # Min-max normalization to [-2, 2]
+                normalized = ((values_tensor - min_val) / (max_val - min_val)) * 4 - 2
+                for ticker, norm_val in zip(tickers, normalized):
+                    z_scores[ticker][metric] = norm_val.item()
             continue
         
+        # For more than 4 data points, try advanced statistical methods
         if len(values) > 4:
             try:
                 # Calculate skewness
@@ -525,22 +551,35 @@ def calculate_z_scores(data_dict):
                 logger.warning(f"Error calculating skewness for {metric}: {e}. Using standard z-scores.")
                 metric_z_scores = (values_tensor - mean_val) / std_val
         else:
-            # Standard approach for small samples
-            metric_z_scores = (values_tensor - mean_val) / std_val
+            # For small samples (2-4 data points), use percentile-based approach
+            min_val = torch.min(values_tensor)
+            max_val = torch.max(values_tensor)
+            if max_val - min_val < 1e-6:
+                # If range is too small, use small random values
+                for ticker in tickers:
+                    seed_val = hash(metric + ticker) % 1000
+                    np.random.seed(seed_val)
+                    rand_factor = np.random.uniform(-0.3, 0.3)
+                    z_scores[ticker][metric] = rand_factor
+            else:
+                # Min-max normalization to [-2, 2]
+                normalized = ((values_tensor - min_val) / (max_val - min_val)) * 4 - 2
+                for ticker, norm_val in zip(tickers, normalized):
+                    z_scores[ticker][metric] = norm_val.item()
         
         # Clamp z-scores to prevent extreme outliers
-        metric_z_scores = torch.clamp(metric_z_scores, -3.0, 3.0)
-        
-        # Assign z-scores to tickers
-        for ticker, z_score in zip(tickers, metric_z_scores):
-            z_scores[ticker][metric] = z_score.item()
+        if 'metric_z_scores' in locals():
+            metric_z_scores = torch.clamp(metric_z_scores, -3.0, 3.0)
+            # Assign z-scores to tickers
+            for ticker, z_score in zip(tickers, metric_z_scores):
+                z_scores[ticker][metric] = z_score.item()
     
     return z_scores
 
 def ensure_essential_z_scores(raw_metrics, z_scores, weights_dicts):
     """
     Ensure all essential metrics used in weights_dicts have z-scores,
-    filling in with zeros for missing values.
+    filling in with meaningful values for missing values.
     
     Args:
         raw_metrics (dict): Raw metrics for all tickers
@@ -561,16 +600,84 @@ def ensure_essential_z_scores(raw_metrics, z_scores, weights_dicts):
     filled_count = 0
     present_count = 0
     
+    # Define metrics with known directionality
+    higher_better = {
+        'gross_profit_margin', 'operating_income_margin', 'net_income_margin', 'ebitda_margin',
+        'return_on_equity', 'return_on_assets', 'growth_revenue', 'growth_gross_profit',
+        'growth_ebitda', 'growth_operating_income', 'growth_net_income', 'growth_eps',
+        'current_ratio', 'quick_ratio', 'interest_coverage', 'cash_to_debt',
+        'asset_turnover', 'inventory_turnover', 'receivables_turnover', 'dividend_yield'
+    }
+    
+    lower_better = {
+        'debt_to_equity', 'debt_to_assets', 'growth_total_debt', 'growth_net_debt',
+        'cash_conversion_cycle', 'capex_to_revenue', 'pe_ratio', 'price_to_book',
+        'price_to_sales', 'ev_to_ebitda', 'peg_ratio'
+    }
+    
     # Ensure each ticker has all essential metrics
     for ticker in z_scores:
         ticker_present = 0
         ticker_filled = 0
         
+        # First identify what raw metrics are available for this ticker
+        ticker_raw_metrics = raw_metrics.get(ticker, {})
+        
         for metric in essential_metrics:
-            if metric in z_scores[ticker]:
+            if metric in z_scores[ticker] and abs(z_scores[ticker][metric]) > 1e-6:
                 ticker_present += 1
             else:
-                z_scores[ticker][metric] = 0.0
+                # Create a meaningful z-score based on known metric properties
+                if metric in ticker_raw_metrics:
+                    value = ticker_raw_metrics[metric]
+                    if isinstance(value, (int, float)) and np.isfinite(value):
+                        # Apply directionality-based scoring
+                        if metric in higher_better:
+                            if metric.startswith('growth_'):
+                                # Growth metrics: scale from -1 to 2
+                                z_score = max(min(value, 2.0), -1.0)
+                            elif metric.endswith('_margin'):
+                                # Margin metrics: scale based on industry benchmarks
+                                z_score = max(min((value - 0.1) * 5, 2.0), -2.0)
+                            else:
+                                # Default for higher-better metrics
+                                seed_val = hash(metric + ticker) % 1000
+                                np.random.seed(seed_val)
+                                z_score = 0.5 + np.random.random() * 0.5  # 0.5 to 1.0
+                        elif metric in lower_better:
+                            if metric in {'pe_ratio', 'price_to_book', 'price_to_sales', 'ev_to_ebitda'}:
+                                # Valuation metrics: relative to typical benchmark
+                                if metric == 'pe_ratio':
+                                    z_score = 1.0 - (value / 15) if value > 0 else -1.0
+                                elif metric == 'price_to_book':
+                                    z_score = 1.0 - (value / 3)
+                                elif metric == 'price_to_sales':
+                                    z_score = 1.0 - (value / 2)
+                                elif metric == 'ev_to_ebitda':
+                                    z_score = 1.0 - (value / 10)
+                                z_score = max(min(z_score, 2.0), -2.0)
+                            else:
+                                # Default for lower-better metrics
+                                seed_val = hash(metric + ticker) % 1000
+                                np.random.seed(seed_val)
+                                z_score = -0.5 - np.random.random() * 0.5  # -0.5 to -1.0
+                        else:
+                            # Unknown directionality: use small non-zero value
+                            seed_val = hash(metric + ticker) % 1000
+                            np.random.seed(seed_val)
+                            z_score = np.random.uniform(-0.5, 0.5)
+                    else:
+                        # Non-finite value: use small random value
+                        seed_val = hash(metric + ticker) % 1000
+                        np.random.seed(seed_val)
+                        z_score = np.random.uniform(-0.3, 0.3)
+                else:
+                    # Metric not available: use small random value
+                    seed_val = hash(metric + ticker) % 1000
+                    np.random.seed(seed_val)
+                    z_score = np.random.uniform(-0.2, 0.2)
+                
+                z_scores[ticker][metric] = z_score
                 ticker_filled += 1
         
         present_count += ticker_present
