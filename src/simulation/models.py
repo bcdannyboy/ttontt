@@ -189,6 +189,253 @@ def simulate_heston(current_price: float, annualized_drift: float, initial_varia
     
     return prices[:, -1]
 
+# ============== CGMY Implementation ==============
+
+def _cgmy_levy_measure(x, C, G, M, Y):
+    """
+    Calculate the CGMY Lévy measure for a given x value.
+    
+    Args:
+        x: Point to evaluate
+        C: CGMY C parameter (scale)
+        G: CGMY G parameter (negative jumps)
+        M: CGMY M parameter (positive jumps)
+        Y: CGMY Y parameter (jump activity)
+        
+    Returns:
+        Value of the Lévy measure at x
+    """
+    if x == 0:
+        return 0
+    elif x < 0:
+        return C * np.exp(G * x) * np.power(np.abs(x), -1 - Y)
+    else:
+        return C * np.exp(-M * x) * np.power(x, -1 - Y)
+
+def _cgmy_characteristic_function(u, C, G, M, Y, t):
+    """
+    Calculate the characteristic function of the CGMY process.
+    
+    Args:
+        u: Frequency parameter
+        C: CGMY C parameter
+        G: CGMY G parameter
+        M: CGMY M parameter
+        Y: CGMY Y parameter
+        t: Time parameter
+        
+    Returns:
+        Characteristic function value
+    """
+    # Ensure stability
+    G_adj = max(G, 1e-8)
+    M_adj = max(M, 1e-8)
+    
+    # Calculate characteristic function
+    omega = C * gamma(-Y) * (
+        np.power(M_adj, Y) - np.power(M_adj - 1j * u, Y) +
+        np.power(G_adj, Y) - np.power(G_adj + 1j * u, Y)
+    )
+    
+    return np.exp(t * omega)
+
+@lru_cache(maxsize=32)
+def _get_cgmy_params_hash(C, G, M, Y, dt):
+    """
+    Create a hash of the CGMY parameters for caching.
+    
+    Args:
+        C, G, M, Y: CGMY parameters
+        dt: Time step
+        
+    Returns:
+        Tuple hash of parameters
+    """
+    # Round parameters for cache stability
+    C_r = round(C, 6)
+    G_r = round(G, 6)
+    M_r = round(M, 6)
+    Y_r = round(Y, 6)
+    dt_r = round(dt, 10)
+    
+    return (C_r, G_r, M_r, Y_r, dt_r)
+
+def _simulate_cgmy_increments_small_jumps(C, G, M, Y, dt, num_increments):
+    """
+    Simulate the small jumps component of the CGMY process using Gaussian approximation.
+    
+    Args:
+        C, G, M, Y: CGMY parameters
+        dt: Time step
+        num_increments: Number of increments to generate
+        
+    Returns:
+        Array of small jump increments
+    """
+    # Truncation level for small jumps
+    epsilon = 0.1
+    
+    # Calculate variance of small jumps
+    var_small_jumps = C * dt * (
+        gamma(2 - Y) * (np.power(epsilon, 2 - Y) / (2 - Y)) * 
+        (1 / np.power(G, 2-Y) + 1 / np.power(M, 2-Y))
+    )
+    
+    # Generate Gaussian approximation
+    return np.random.normal(0, np.sqrt(var_small_jumps), num_increments)
+
+def _simulate_cgmy_increments_large_jumps(C, G, M, Y, dt, num_increments):
+    """
+    Simulate the large jumps component of the CGMY process.
+    
+    Args:
+        C, G, M, Y: CGMY parameters
+        dt: Time step
+        num_increments: Number of increments to generate
+        
+    Returns:
+        Array of large jump increments
+    """
+    # Truncation level for large jumps
+    epsilon = 0.1
+    
+    # Calculate intensity of positive and negative large jumps
+    lambda_pos = C * dt * epsilon**(-Y) / Y * np.exp(-M * epsilon)
+    lambda_neg = C * dt * epsilon**(-Y) / Y * np.exp(-G * epsilon)
+    
+    # Expected number of jumps
+    mean_num_jumps = lambda_pos + lambda_neg
+    
+    # Generate actual number of jumps
+    num_jumps = np.random.poisson(mean_num_jumps)
+    
+    if num_jumps == 0:
+        return np.zeros(num_increments)
+    
+    # Generate jump sizes
+    jumps = np.zeros(num_jumps)
+    
+    # Probability of positive jump
+    prob_pos = lambda_pos / (lambda_pos + lambda_neg)
+    
+    # Generate jump directions
+    directions = np.random.binomial(1, prob_pos, num_jumps)
+    
+    # Generate jump sizes based on direction
+    for i in range(num_jumps):
+        if directions[i] == 1:  # Positive jump
+            # Sample from truncated exponential
+            u = np.random.uniform(0, 1)
+            jumps[i] = epsilon - (1/M) * np.log(u * (1 - np.exp(-M * (10 - epsilon))) + np.exp(-M * (10 - epsilon)))
+        else:  # Negative jump
+            # Sample from truncated exponential
+            u = np.random.uniform(0, 1)
+            jumps[i] = -(epsilon - (1/G) * np.log(u * (1 - np.exp(-G * (10 - epsilon))) + np.exp(-G * (10 - epsilon))))
+    
+    # Distribute jumps across increments
+    result = np.zeros(num_increments)
+    jump_positions = np.random.randint(0, num_increments, num_jumps)
+    
+    # Add jumps at their positions
+    for i, pos in enumerate(jump_positions):
+        result[pos] += jumps[i]
+    
+    return result
+
+def _compensate_jumps(C, G, M, Y, dt):
+    """
+    Calculate the compensation term for the CGMY process to ensure martingality.
+    
+    Args:
+        C, G, M, Y: CGMY parameters
+        dt: Time step
+        
+    Returns:
+        Compensation term
+    """
+    # Martingale compensation term
+    compensation = 0.0
+    
+    # If Y is close to 0 or 1, use special cases to avoid numerical issues
+    if abs(Y - 0.0) < 1e-6:
+        compensation = C * dt * (np.log(G / (G - 1)) + np.log(M / (M + 1)))
+    elif abs(Y - 1.0) < 1e-6:
+        compensation = C * dt * (
+            G * np.log(G) - (G - 1) * np.log(G - 1) -
+            M * np.log(M) + (M + 1) * np.log(M + 1)
+        )
+    else:
+        # Standard formula
+        compensation = C * dt * gamma(-Y) * (
+            np.power(M, Y) * (1 - Y) - M * np.power(M - 1, Y - 1) +
+            np.power(G, Y) * (1 - Y) + G * np.power(G + 1, Y - 1)
+        )
+    
+    return compensation
+
+def simulate_cgmy_increments_optimized(C, G, M, Y, dt, num_increments):
+    """
+    Optimized implementation to simulate CGMY process increments.
+    Uses caching for efficiency and different methods based on parameters.
+    
+    Args:
+        C: CGMY C parameter (scale)
+        G: CGMY G parameter (negative jumps)
+        M: CGMY M parameter (positive jumps)
+        Y: CGMY Y parameter (jump activity)
+        dt: Time step size
+        num_increments: Number of increments to simulate
+        
+    Returns:
+        Array of CGMY increments
+    """
+    # Ensure parameters are in valid ranges
+    C = max(1e-8, C)
+    G = max(1e-8, G)
+    M = max(1e-8, M)
+    Y = min(max(0.01, Y), 1.99)  # Y must be in (0, 2)
+    
+    # Create parameter hash for cache lookup
+    param_hash = _get_cgmy_params_hash(C, G, M, Y, dt)
+    
+    # Check if compensation term is in cache
+    if param_hash in CGMY_CACHE:
+        compensation = CGMY_CACHE[param_hash]
+    else:
+        # Calculate compensation term and cache it
+        compensation = _compensate_jumps(C, G, M, Y, dt)
+        CGMY_CACHE[param_hash] = compensation
+    
+    # Different simulation approaches based on Y parameter
+    if Y < 0.5:
+        # For small Y, compound Poisson process approximation works well
+        small_jumps = np.zeros(num_increments)
+        large_jumps = _simulate_cgmy_increments_large_jumps(C, G, M, Y, dt, num_increments)
+        increments = small_jumps + large_jumps
+    elif Y >= 0.5 and Y < 1.5:
+        # For medium Y, use combination of small and large jumps
+        small_jumps = _simulate_cgmy_increments_small_jumps(C, G, M, Y, dt, num_increments)
+        large_jumps = _simulate_cgmy_increments_large_jumps(C, G, M, Y, dt, num_increments)
+        increments = small_jumps + large_jumps
+    else:
+        # For large Y, stable approximation works better
+        # Calculate parameters for alpha-stable approximation
+        alpha = Y
+        beta = (G - M) / (G + M)
+        sigma = np.power(C * dt * gamma(2 - Y) * np.cos(np.pi * Y / 2) * 
+                        np.power(G + M, Y), 1/alpha)
+        mu = 0.0
+        
+        # Generate stable random variables
+        increments = levy_stable.rvs(
+            alpha=alpha, beta=beta, loc=mu, scale=sigma, size=num_increments
+        )
+    
+    # Apply compensation term for martingality
+    increments = increments - compensation
+    
+    return increments
+
 # ============== SABR-CGMY Model ==============
 
 def simulate_sabr_cgmy(current_price: float, initial_volatility: float, risk_free_rate: float,
