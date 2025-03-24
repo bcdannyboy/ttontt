@@ -8,10 +8,10 @@ TTONTT is an advanced financial analysis tool that integrates fundamental analys
 
 - [Overview](#overview)
 - [Key Features](#key-features)
-- [Core Components](#core-components)
 - [Mathematical Models & Algorithms](#mathematical-models--algorithms)
 - [Optimization & Parallelization](#optimization--parallelization)
 - [Visualization & Reporting](#visualization--reporting)
+- [Output Structure & Interpretation](#output-structure--interpretation)
 - [Implementation Details](#implementation-details)
 
 ## Overview
@@ -35,43 +35,6 @@ The system is optimized for performance with multi-threading, GPU acceleration w
 - **JSON Export**: Save analysis results for further processing or visualization
 - **GPU Acceleration**: Leverage GPU/MPS capabilities for performance-intensive calculations
 - **Parallel Processing**: Efficient multi-threaded and asynchronous execution
-
-## Core Components
-
-TTONTT consists of several specialized modules:
-
-1. **Fundamental Analysis**
-   - Financial metrics extraction and scoring (`fundamentals_metrics.py`)
-   - Data retrieval and processing (`fundamentals_data.py`)
-   - Z-score normalization for comparison (`fundamentals_metrics.py`)
-   - Peer analysis for relative comparison (`fundamentals_peers.py`)
-   - Stock screening and ranking (`fundamentals_screen.py`)
-   - Comprehensive comparison tools (`fundamentals_compare.py`)
-
-2. **Technical Analysis (`technicals.py`)**
-   - Price pattern and momentum indicators
-   - Volatility metrics calculation
-   - Volume and trend analysis
-   - Technical signal detection
-   - Multi-factor scoring system
-
-3. **Monte Carlo Simulation (`montecarlo.py`, `models.py`)**
-   - Multiple stochastic models (GBM, Heston, SABR-CGMY)
-   - Volatility model integration
-   - Probability distribution analysis
-   - Custom time horizon projections
-   - GPU-accelerated simulations
-
-4. **Parallel Execution (`parallel.py`)**
-   - Optimized thread and process management
-   - Task batching and workload distribution
-   - Semaphore-controlled concurrency
-   - Resource-aware scaling
-
-5. **Historical Volatility Analysis (`historical.py`)**
-   - Multiple volatility calculation methods
-   - Timeframe optimization
-   - Statistical analysis of volatility patterns
 
 ## Mathematical Models & Algorithms
 
@@ -445,6 +408,85 @@ The framework uses terminal-based visualization and data export:
    - Complete analysis results with all metrics
    - Integration-ready format
 
+## Output Structure & Interpretation
+
+The framework produces a multi-layered analysis output presented as formatted terminal tables:
+
+### Fundamental Screening Results
+The first table shows all analyzed tickers sorted by their composite fundamental scores. These scores represent overall financial strength based on the weighted metrics across all six fundamental categories.
+
+### Fundamental Quartile Analysis
+This section shows detailed tables for:
+- **Top Quartile Stocks**: Companies in the top 25% of fundamental scores
+- **Bottom Quartile Stocks**: Companies in the bottom 25% of fundamental scores
+
+Each table provides the composite score plus the breakdown by category (Profitability, Growth, Financial Health, Valuation, Efficiency, and Analyst Estimates). The tables also include peer comparison data:
+- **Peer Avg**: Average score of peer companies in the same sector
+- **Peer Delta**: Difference between the stock's score and its peer average
+
+### Technical & Monte Carlo Analysis Tables
+These tables present stocks organized by both their fundamental and technical rankings. The system generates four tables:
+- **Top Technical Quartile (Top Fundamentals)**: Strong technical signals with strong fundamentals
+- **Bottom Technical Quartile (Top Fundamentals)**: Weak technical signals with strong fundamentals
+- **Top Technical Quartile (Bottom Fundamentals)**: Strong technical signals with weak fundamentals
+- **Bottom Technical Quartile (Bottom Fundamentals)**: Weak technical signals with weak fundamentals
+
+Each table includes:
+
+1. **Basic Information**:
+   - Ticker: Stock symbol
+   - Score: Technical analysis composite score
+   - Current: Current stock price
+
+2. **Technical Price Projections** (21-day horizon):
+   - Tech Exp: Expected price based on technical indicators
+   - Tech Low: Lower bound of the technical price projection
+   - Tech High: Upper bound of the technical price projection
+
+3. **Monte Carlo Projections** (21-day horizon):
+   - MC Exp $: Expected price from Monte Carlo simulations
+   - MC Exp Δ: Expected percentage change
+   - MC Low $: Lower bound price (5th percentile)
+   - MC Low %: Probability of dropping 10% or more
+   - MC High $: Upper bound price (95th percentile)
+   - MC High %: Probability of rising 10% or more
+
+4. **Category Scores**:
+   - Trend: Score for trend indicators
+   - Momentum: Score for momentum indicators
+   - Volatility: Score for volatility indicators
+   - Volume: Score for volume indicators
+
+5. **Signals & Warnings**:
+   - Signals: Bullish technical indicators (e.g., "RSI is oversold")
+   - Warnings: Bearish technical indicators (e.g., "Death Cross")
+
+### Interpretation Guidelines
+
+1. **Time Horizon**: All technical and Monte Carlo projections are for a **21-day (1-month)** time horizon.
+
+2. **Trading Opportunities**:
+   - Highest probability entries: Top Technical Quartile of Top Fundamental stocks
+   - Potential reversals: Bottom Technical Quartile of Top Fundamental stocks
+   - Short-term trades: Top Technical Quartile of Bottom Fundamental stocks
+   - Potential shorts: Bottom Technical Quartile of Bottom Fundamental stocks
+
+3. **Risk Assessment**:
+   - Compare MC Low % and MC High % to evaluate risk-reward ratio
+   - Higher probability differentials indicate stronger directional bias
+   - Technical signals confirm Monte Carlo projections when aligned
+
+4. **Decision Framework**:
+   - Strong fundamentals + strong technicals + favorable Monte Carlo: Consider entry
+   - Strong fundamentals + weak technicals: Consider watching for reversal
+   - Weak fundamentals + strong technicals: Consider short-term trades only
+   - Weak fundamentals + weak technicals: Consider avoiding or shorting
+
+5. **Confidence Assessment**:
+   - Higher agreement between technical projections and Monte Carlo results indicates higher confidence
+   - Larger gaps between current price and projections suggest stronger potential moves
+   - Multiple aligned signals reinforce the analysis
+
 ## Implementation Details
 
 ### Data Sources and API Integration
@@ -537,5 +579,3 @@ The Monte Carlo simulation process follows these steps:
    - Integrates with technical indicators
    - Combines with fundamental metrics
    - Provides comprehensive trading insights
-
-This comprehensive implementation provides a sophisticated multi-dimensional analysis framework for stock evaluation, combining fundamental metrics, technical indicators, and future price projections through stochastic simulations.
