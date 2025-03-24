@@ -1103,6 +1103,225 @@ def generate_synthetic_peers(all_results):
     
     return peer_data_dict
 
+def save_final_json(fundamental_results, tech_reports, mc_reports, output_dir="output"):
+    """
+    Combines fundamental, technical, and Monte Carlo results into a final comprehensive JSON file
+    organized by quartiles.
+    
+    Args:
+        fundamental_results (list): List of (ticker, score, details) tuples from fundamental screening
+        tech_reports (list): List of technical report dictionaries
+        mc_reports (list): List of Monte Carlo report dictionaries
+        output_dir (str): Directory to save the file
+        
+    Returns:
+        str: Filename if successful, None if error occurs
+    """
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        output_filename = f"{output_dir}/final_json_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        
+        # Extract fundamental scores and create quartiles
+        fundamental_scores = [score for _, score, _ in fundamental_results]
+        q1 = np.percentile(fundamental_scores, 25)
+        q3 = np.percentile(fundamental_scores, 75)
+        
+        # Create mappings for fundamental quartiles
+        top_fundamental_tickers = set(ticker for ticker, score, _ in fundamental_results if score >= q3)
+        bottom_fundamental_tickers = set(ticker for ticker, score, _ in fundamental_results if score <= q1)
+        
+        # Create mapping for fundamental data
+        fundamental_map = {ticker: {"score": score, "details": details} for ticker, score, details in fundamental_results}
+        
+        # Create mapping for technical data
+        tech_map = {report["ticker"]: report for report in tech_reports}
+        
+        # Create mapping for Monte Carlo data
+        mc_map = {report["ticker"]: report for report in mc_reports}
+        
+        # Group technical reports by fundamental quartile
+        top_fundamental_tech_reports = [report for report in tech_reports if report["ticker"] in top_fundamental_tickers]
+        bottom_fundamental_tech_reports = [report for report in tech_reports if report["ticker"] in bottom_fundamental_tickers]
+        
+        # Final data structure
+        final_data = {
+            "analysis_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "top_fundamental": {
+                "top_technical": [],
+                "bottom_technical": []
+            },
+            "bottom_fundamental": {
+                "top_technical": [],
+                "bottom_technical": []
+            }
+        }
+        
+        # Process top fundamental group
+        if top_fundamental_tech_reports:
+            tech_top_scores = [report["technical_score"] for report in top_fundamental_tech_reports]
+            if len(tech_top_scores) >= 4:  # Need at least 4 points for quartiles to make sense
+                tech_top_q1 = np.percentile(tech_top_scores, 25)
+                tech_top_q3 = np.percentile(tech_top_scores, 75)
+                
+                tech_top_top_reports = [report for report in top_fundamental_tech_reports if report["technical_score"] >= tech_top_q3]
+                tech_top_bottom_reports = [report for report in top_fundamental_tech_reports if report["technical_score"] <= tech_top_q1]
+                
+                # Add to final data
+                for report in tech_top_top_reports:
+                    ticker = report["ticker"]
+                    mc_data = next((mc for mc in mc_reports if mc["ticker"] == ticker), {})
+                    
+                    stock_data = {
+                        "ticker": ticker,
+                        "fundamental_score": fundamental_map.get(ticker, {}).get("score", 0),
+                        "technical_score": report["technical_score"],
+                        "fundamental_details": fundamental_map.get(ticker, {}).get("details", {}),
+                        "technical_details": report,
+                        "monte_carlo": mc_data.get("report", {}).get("monte_carlo", {}) if "report" in mc_data else {}
+                    }
+                    final_data["top_fundamental"]["top_technical"].append(stock_data)
+                
+                for report in tech_top_bottom_reports:
+                    ticker = report["ticker"]
+                    mc_data = next((mc for mc in mc_reports if mc["ticker"] == ticker), {})
+                    
+                    stock_data = {
+                        "ticker": ticker,
+                        "fundamental_score": fundamental_map.get(ticker, {}).get("score", 0),
+                        "technical_score": report["technical_score"],
+                        "fundamental_details": fundamental_map.get(ticker, {}).get("details", {}),
+                        "technical_details": report,
+                        "monte_carlo": mc_data.get("report", {}).get("monte_carlo", {}) if "report" in mc_data else {}
+                    }
+                    final_data["top_fundamental"]["bottom_technical"].append(stock_data)
+            else:
+                # Not enough data points for quartiles, just use median as divide
+                if tech_top_scores:
+                    median = np.median(tech_top_scores)
+                    tech_top_top_reports = [report for report in top_fundamental_tech_reports if report["technical_score"] >= median]
+                    tech_top_bottom_reports = [report for report in top_fundamental_tech_reports if report["technical_score"] < median]
+                    
+                    # Add to final data (same process as above)
+                    for report in tech_top_top_reports:
+                        ticker = report["ticker"]
+                        mc_data = next((mc for mc in mc_reports if mc["ticker"] == ticker), {})
+                        
+                        stock_data = {
+                            "ticker": ticker,
+                            "fundamental_score": fundamental_map.get(ticker, {}).get("score", 0),
+                            "technical_score": report["technical_score"],
+                            "fundamental_details": fundamental_map.get(ticker, {}).get("details", {}),
+                            "technical_details": report,
+                            "monte_carlo": mc_data.get("report", {}).get("monte_carlo", {}) if "report" in mc_data else {}
+                        }
+                        final_data["top_fundamental"]["top_technical"].append(stock_data)
+                    
+                    for report in tech_top_bottom_reports:
+                        ticker = report["ticker"]
+                        mc_data = next((mc for mc in mc_reports if mc["ticker"] == ticker), {})
+                        
+                        stock_data = {
+                            "ticker": ticker,
+                            "fundamental_score": fundamental_map.get(ticker, {}).get("score", 0),
+                            "technical_score": report["technical_score"],
+                            "fundamental_details": fundamental_map.get(ticker, {}).get("details", {}),
+                            "technical_details": report,
+                            "monte_carlo": mc_data.get("report", {}).get("monte_carlo", {}) if "report" in mc_data else {}
+                        }
+                        final_data["top_fundamental"]["bottom_technical"].append(stock_data)
+        
+        # Process bottom fundamental group
+        if bottom_fundamental_tech_reports:
+            tech_bottom_scores = [report["technical_score"] for report in bottom_fundamental_tech_reports]
+            if len(tech_bottom_scores) >= 4:  # Need at least 4 points for quartiles to make sense
+                tech_bottom_q1 = np.percentile(tech_bottom_scores, 25)
+                tech_bottom_q3 = np.percentile(tech_bottom_scores, 75)
+                
+                tech_bottom_top_reports = [report for report in bottom_fundamental_tech_reports if report["technical_score"] >= tech_bottom_q3]
+                tech_bottom_bottom_reports = [report for report in bottom_fundamental_tech_reports if report["technical_score"] <= tech_bottom_q1]
+                
+                # Add to final data
+                for report in tech_bottom_top_reports:
+                    ticker = report["ticker"]
+                    mc_data = next((mc for mc in mc_reports if mc["ticker"] == ticker), {})
+                    
+                    stock_data = {
+                        "ticker": ticker,
+                        "fundamental_score": fundamental_map.get(ticker, {}).get("score", 0),
+                        "technical_score": report["technical_score"],
+                        "fundamental_details": fundamental_map.get(ticker, {}).get("details", {}),
+                        "technical_details": report,
+                        "monte_carlo": mc_data.get("report", {}).get("monte_carlo", {}) if "report" in mc_data else {}
+                    }
+                    final_data["bottom_fundamental"]["top_technical"].append(stock_data)
+                
+                for report in tech_bottom_bottom_reports:
+                    ticker = report["ticker"]
+                    mc_data = next((mc for mc in mc_reports if mc["ticker"] == ticker), {})
+                    
+                    stock_data = {
+                        "ticker": ticker,
+                        "fundamental_score": fundamental_map.get(ticker, {}).get("score", 0),
+                        "technical_score": report["technical_score"],
+                        "fundamental_details": fundamental_map.get(ticker, {}).get("details", {}),
+                        "technical_details": report,
+                        "monte_carlo": mc_data.get("report", {}).get("monte_carlo", {}) if "report" in mc_data else {}
+                    }
+                    final_data["bottom_fundamental"]["bottom_technical"].append(stock_data)
+            else:
+                # Not enough data points for quartiles, just use median as divide
+                if tech_bottom_scores:
+                    median = np.median(tech_bottom_scores)
+                    tech_bottom_top_reports = [report for report in bottom_fundamental_tech_reports if report["technical_score"] >= median]
+                    tech_bottom_bottom_reports = [report for report in bottom_fundamental_tech_reports if report["technical_score"] < median]
+                    
+                    # Add to final data (same process as above)
+                    for report in tech_bottom_top_reports:
+                        ticker = report["ticker"]
+                        mc_data = next((mc for mc in mc_reports if mc["ticker"] == ticker), {})
+                        
+                        stock_data = {
+                            "ticker": ticker,
+                            "fundamental_score": fundamental_map.get(ticker, {}).get("score", 0),
+                            "technical_score": report["technical_score"],
+                            "fundamental_details": fundamental_map.get(ticker, {}).get("details", {}),
+                            "technical_details": report,
+                            "monte_carlo": mc_data.get("report", {}).get("monte_carlo", {}) if "report" in mc_data else {}
+                        }
+                        final_data["bottom_fundamental"]["top_technical"].append(stock_data)
+                    
+                    for report in tech_bottom_bottom_reports:
+                        ticker = report["ticker"]
+                        mc_data = next((mc for mc in mc_reports if mc["ticker"] == ticker), {})
+                        
+                        stock_data = {
+                            "ticker": ticker,
+                            "fundamental_score": fundamental_map.get(ticker, {}).get("score", 0),
+                            "technical_score": report["technical_score"],
+                            "fundamental_details": fundamental_map.get(ticker, {}).get("details", {}),
+                            "technical_details": report,
+                            "monte_carlo": mc_data.get("report", {}).get("monte_carlo", {}) if "report" in mc_data else {}
+                        }
+                        final_data["bottom_fundamental"]["bottom_technical"].append(stock_data)
+        
+        # Sort all lists by technical_score in descending order
+        final_data["top_fundamental"]["top_technical"].sort(key=lambda x: x["technical_score"], reverse=True)
+        final_data["top_fundamental"]["bottom_technical"].sort(key=lambda x: x["technical_score"], reverse=True)
+        final_data["bottom_fundamental"]["top_technical"].sort(key=lambda x: x["technical_score"], reverse=True)
+        final_data["bottom_fundamental"]["bottom_technical"].sort(key=lambda x: x["technical_score"], reverse=True)
+        
+        # Write to file with proper handling of numpy types
+        with open(output_filename, 'w') as json_file:
+            json.dump(final_data, json_file, indent=4, default=lambda x: float(x) if isinstance(x, (np.float32, np.float64)) 
+                     else (x.tolist() if isinstance(x, np.ndarray) else x))
+        
+        logger.info(f"Final JSON saved to {output_filename}")
+        return output_filename
+    except Exception as e:
+        logger.error(f"Error saving final JSON: {e}")
+        logger.debug(traceback.format_exc())
+        return None
+
 def save_results_to_json(json_data, output_dir="output", filename_prefix="fundamental_screening"):
     """
     Saves results to JSON file with error handling.
@@ -1125,7 +1344,6 @@ def save_results_to_json(json_data, output_dir="output", filename_prefix="fundam
         logger.error(f"Error saving results to JSON: {e}")
         logger.debug(traceback.format_exc())
         return None
-
 
 if __name__ == "__main__":
     start = datetime.now()
@@ -1405,6 +1623,13 @@ if __name__ == "__main__":
                         logger.info(f"Technical results saved to {tech_output_filename}")
                     else:
                         logger.error("Error saving technical results to file. Check logs for details.")
+                    
+                    # Save combined final JSON - THIS IS THE NEW ADDITION
+                    final_json_filename = save_final_json(results, tech_reports, mc_reports)
+                    if final_json_filename:
+                        logger.info(f"Final comprehensive quartile analysis saved to {final_json_filename}")
+                    else:
+                        logger.error("Error saving final comprehensive quartile analysis. Check logs for details.")
                     
                     # Create mapping for fast lookup of reports by ticker
                     tech_reports_map = {r["ticker"]: r for r in tech_reports}
@@ -1764,3 +1989,6 @@ if __name__ == "__main__":
 
     end = datetime.now()
     print(f"time to completion: {end-start}")
+
+
+    
