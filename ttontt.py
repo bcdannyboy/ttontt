@@ -1,12 +1,13 @@
 import asyncio
 import concurrent
-from src.screener import technicals
 from src.screener.fundamentals.fundamentals_peers import gather_peer_analysis
 from src.screener.fundamentals.fundamentals_report import generate_stock_report
 from src.screener.fundamentals.fundamentals_screen import screen_stocks
 from src.screener.fundamentals.fundamentals_metrics import (extract_metrics_from_financial_data, preprocess_data,
                                     calculate_z_scores, calculate_weighted_score, construct_earnings_from_income,
                                     ensure_essential_z_scores)
+from src.screener.technical.screening import screen_stocks as tech_screen_stocks
+from src.screener.technical.report import generate_stock_report as tech_generate_stock_report, get_indicator_contributions
 from src.simulation import montecarlo 
 import json
 import os
@@ -108,13 +109,40 @@ def generate_stock_report_task(ticker, score, details):
 
 
 def generate_technical_report_task(ticker, score, details):
+    """
+    Generates a technical analysis report for a given ticker.
+    
+    Args:
+        ticker (str): The stock ticker symbol.
+        score (float): The technical score from screening.
+        details (dict): Detailed results from technical screening including category scores.
+        
+    Returns:
+        dict: A technical analysis report with screening scores, signals, and warnings.
+    """
     try:
-        report = technicals.generate_stock_report(ticker)
+        # Updated to use properly imported function
+        report = tech_generate_stock_report(ticker)
+        
         report['category_scores'] = details['category_scores']
         report['composite_score'] = float(score)
+        
+        # Extract price prediction data
         report['expected_price'] = report.get('raw_indicators', {}).get('expected_price', None)
         report['probable_low'] = report.get('raw_indicators', {}).get('probable_low', None)
         report['probable_high'] = report.get('raw_indicators', {}).get('probable_high', None)
+        
+        # Get indicator contributions for deeper analysis
+        try:
+            contributions_df = get_indicator_contributions(ticker)
+            if not contributions_df.empty:
+                # Convert dataframe to dictionary for JSON serialization
+                contributions = contributions_df.to_dict(orient='records')
+                report['indicator_contributions'] = contributions
+        except Exception as e:
+            logger.warning(f"Could not get indicator contributions for {ticker}: {e}")
+            report['indicator_contributions'] = []
+        
         return {
             "ticker": ticker,
             "technical_score": float(score),
@@ -453,7 +481,7 @@ def generate_monte_carlo_report_task(ticker: str, score: float, details: dict) -
                         "prob_up_10pct": horizon_1m["prob_up_10pct"] if horizon_1m else None,
                         "prob_down_10pct": horizon_1m["prob_down_10pct"] if horizon_1m else None,
                         "time_horizons": time_horizons,
-                        "volatility_models": mc_report.get("volatility_models")  # Include volatility model info
+                        "volatility_models": mc_report.get("volatility_models")
                     }
                 }
             }
@@ -1525,7 +1553,7 @@ if __name__ == "__main__":
                 quartile_tickers = [ticker for ticker, _, _ in top_quartile + bottom_quartile]
                 
                 # Perform technical screening
-                tech_results = technicals.screen_stocks(quartile_tickers)
+                tech_results = tech_screen_stocks(quartile_tickers)
                 
                 if tech_results:
                     # Attach fundamental group info to technical results
@@ -1989,6 +2017,3 @@ if __name__ == "__main__":
 
     end = datetime.now()
     print(f"time to completion: {end-start}")
-
-
-    

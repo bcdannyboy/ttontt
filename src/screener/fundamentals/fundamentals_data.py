@@ -50,7 +50,7 @@ async def get_financial_data_async(ticker: str):
             try:
                 income_task = rate_limited_api_call(
                     obb_client.equity.fundamental.income,
-                    symbol=ticker, period='annual', limit=5, provider=provider
+                    symbol=ticker, period='annual', limit=10, provider=provider
                 )
                 income_response = await income_task
                 if income_response and hasattr(income_response, 'results') and income_response.results:
@@ -66,7 +66,7 @@ async def get_financial_data_async(ticker: str):
             try:
                 balance_task = rate_limited_api_call(
                     obb_client.equity.fundamental.balance,
-                    symbol=ticker, period='annual', limit=5, provider=provider
+                    symbol=ticker, period='annual', limit=10, provider=provider
                 )
                 balance_response = await balance_task
                 if balance_response and hasattr(balance_response, 'results') and balance_response.results:
@@ -82,7 +82,7 @@ async def get_financial_data_async(ticker: str):
             try:
                 cash_task = rate_limited_api_call(
                     obb_client.equity.fundamental.cash,
-                    symbol=ticker, period='annual', limit=5, provider=provider
+                    symbol=ticker, period='annual', limit=10, provider=provider
                 )
                 cash_response = await cash_task
                 if cash_response and hasattr(cash_response, 'results') and cash_response.results:
@@ -99,7 +99,8 @@ async def get_financial_data_async(ticker: str):
             try:
                 summary_response = await rate_limited_api_call(
                     obb_client.equity.fundamental.overview, 
-                    symbol=ticker
+                    symbol=ticker,
+                    period="annual"
                 )
                 if summary_response and hasattr(summary_response, 'results') and summary_response.results:
                     # Create minimal income and balance data from overview
@@ -136,8 +137,8 @@ async def get_financial_data_async(ticker: str):
             for provider in providers[:2]:  # Only try the first two providers for additional data
                 additional_data_tasks.append(
                     ('additional', data_type, provider, rate_limited_api_call(
-                        method, symbol=ticker, period='annual' if data_type != 'historical_estimates' else None, 
-                        limit=5 if data_type != 'historical_estimates' else None, provider=provider
+                        method, symbol=ticker, period='annual', 
+                        limit=10, provider=provider
                     ))
                 )
         
@@ -157,7 +158,7 @@ async def get_financial_data_async(ticker: str):
         # Add task for dividends
         additional_data_tasks.append(
             ('dividends', 'dividends', 'fmp', rate_limited_api_call(
-                obb_client.equity.fundamental.dividends, symbol=ticker, provider='fmp'
+                obb_client.equity.fundamental.dividends, symbol=ticker, provider='fmp', period="annual"
             ))
         )
         
@@ -166,7 +167,7 @@ async def get_financial_data_async(ticker: str):
             if hasattr(obb_client.equity.fundamental, 'earnings'):
                 additional_data_tasks.append(
                     ('earnings', 'earnings', 'fmp', rate_limited_api_call(
-                        obb_client.equity.fundamental.earnings, symbol=ticker, provider='fmp'
+                        obb_client.equity.fundamental.earnings, symbol=ticker, provider='fmp', period="annual"
                     ))
                 )
         except Exception:
