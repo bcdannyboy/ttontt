@@ -1141,8 +1141,8 @@ if __name__ == "__main__":
 """
         print(ascii_art)
 
-        # init_tickers = tickers.tickers
-        init_tickers = get_active_tickers()
+        init_tickers = tickers.tickers
+        # init_tickers = get_active_tickers()
         print(f"analyzing {len(init_tickers)} tickers...")
                   
         results = perform_stock_screening(init_tickers, batch_size=os.cpu_count()*2)
