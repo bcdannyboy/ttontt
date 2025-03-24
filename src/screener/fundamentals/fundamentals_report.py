@@ -86,7 +86,7 @@ def generate_stock_report(ticker: str) -> dict:
                 financial_data['forward_ebitda'] = []
         try:
             historical_estimates_response = obb_client.equity.estimates.historical(
-                symbol=ticker, provider='fmp'
+                symbol=ticker, fiscal_period='annual', provider='fmp'
             )
             financial_data['historical_estimates'] = historical_estimates_response.results
         except Exception as e:
