@@ -43,9 +43,7 @@ all_tables = []
 
 def generate_stock_report_task(ticker, score, details):
     """
-    Generates a detailed stock report for a given ticker.
-    In addition to the fundamentals, this version includes the peer analysis data
-    (peer average and the delta) in the report.
+    Generates a detailed stock report for a given ticker using existing screening data.
     
     Args:
         ticker (str): The stock ticker symbol.
@@ -56,14 +54,148 @@ def generate_stock_report_task(ticker, score, details):
         dict: A complete stock report with screening scores and peer analysis.
     """
     try:
-        report = generate_stock_report(ticker)
-        report['category_scores'] = details['category_scores']
-        report['composite_score'] = float(score)
-        # Include peer analysis in the report.
-        report['peer_analysis'] = {
-            'peer_average': details.get('peer_comparison'),
-            'peer_delta': details.get('peer_delta')
+        # Create the report directly from the provided details instead of calling generate_stock_report
+        report = {
+            'ticker': ticker,
+            'composite_score': float(score),
+            'category_scores': details['category_scores'],
+            'z_scores': details.get('z_scores', {}),
+            'peer_analysis': {
+                'peer_average': details.get('peer_comparison'),
+                'peer_delta': details.get('peer_delta')
+            },
+            'key_metrics': {},
+            'strengths': [],
+            'weaknesses': [],
+            'raw_metrics': details.get('raw_metrics', {})
         }
+        
+        # Extract and format key metrics from the raw metrics
+        raw_metrics = details.get('raw_metrics', {})
+        if raw_metrics:
+            # Organize metrics into categories
+            report['key_metrics'] = {
+                'profitability': {
+                    'gross_margin': raw_metrics.get('gross_profit_margin'),
+                    'operating_margin': raw_metrics.get('operating_income_margin'),
+                    'net_margin': raw_metrics.get('net_income_margin'),
+                    'roe': raw_metrics.get('return_on_equity'),
+                    'roa': raw_metrics.get('return_on_assets')
+                },
+                'growth': {
+                    'revenue_growth': raw_metrics.get('growth_revenue'),
+                    'earnings_growth': raw_metrics.get('growth_net_income'),
+                    'eps_growth': raw_metrics.get('growth_eps'),
+                    'forward_sales_growth': raw_metrics.get('forward_sales_growth'),
+                    'forward_ebitda_growth': raw_metrics.get('forward_ebitda_growth')
+                },
+                'financial_health': {
+                    'current_ratio': raw_metrics.get('current_ratio'),
+                    'debt_to_equity': raw_metrics.get('debt_to_equity'),
+                    'debt_to_assets': raw_metrics.get('debt_to_assets'),
+                    'interest_coverage': raw_metrics.get('interest_coverage'),
+                    'cash_to_debt': raw_metrics.get('cash_to_debt')
+                },
+                'valuation': {
+                    'pe_ratio': raw_metrics.get('pe_ratio'),
+                    'price_to_book': raw_metrics.get('price_to_book'),
+                    'price_to_sales': raw_metrics.get('price_to_sales'),
+                    'ev_to_ebitda': raw_metrics.get('ev_to_ebitda'),
+                    'dividend_yield': raw_metrics.get('dividend_yield'),
+                    'peg_ratio': raw_metrics.get('peg_ratio')
+                },
+                'efficiency': {
+                    'asset_turnover': raw_metrics.get('asset_turnover'),
+                    'inventory_turnover': raw_metrics.get('inventory_turnover'),
+                    'receivables_turnover': raw_metrics.get('receivables_turnover'),
+                    'cash_conversion_cycle': raw_metrics.get('cash_conversion_cycle'),
+                    'capex_to_revenue': raw_metrics.get('capex_to_revenue')
+                },
+                'analyst_estimates': {
+                    'estimate_eps_accuracy': raw_metrics.get('estimate_eps_accuracy', 0),
+                    'estimate_revenue_accuracy': raw_metrics.get('estimate_revenue_accuracy', 0),
+                    'forward_sales_growth': raw_metrics.get('forward_sales_growth'),
+                    'forward_ebitda_growth': raw_metrics.get('forward_ebitda_growth'),
+                    'estimate_revision_momentum': raw_metrics.get('estimate_revision_momentum', 0),
+                    'estimate_consensus_deviation': raw_metrics.get('estimate_consensus_deviation', 0)
+                }
+            }
+            
+            # Generate strengths and weaknesses based on metrics
+            # Simple logic to identify notable metrics
+            profitability_benchmarks = {
+                'gross_profit_margin': 0.35,
+                'operating_income_margin': 0.15,
+                'net_income_margin': 0.10,
+                'return_on_equity': 0.15,
+                'return_on_assets': 0.05
+            }
+            
+            financial_health_benchmarks = {
+                'current_ratio': 1.5,
+                'debt_to_equity': 1.0,
+                'interest_coverage': 3.0,
+                'cash_to_debt': 0.5
+            }
+            
+            growth_benchmarks = {
+                'growth_revenue': 0.10,
+                'growth_net_income': 0.10,
+                'growth_eps': 0.10,
+                'forward_sales_growth': 0.10,
+                'forward_ebitda_growth': 0.10
+            }
+            
+            valuation_benchmarks = {
+                'pe_ratio': 20.0,
+                'price_to_book': 3.0,
+                'price_to_sales': 2.0,
+                'ev_to_ebitda': 12.0,
+                'dividend_yield': 0.02
+            }
+            
+            # Apply the benchmarks to identify strengths and weaknesses
+            for metric, benchmark in profitability_benchmarks.items():
+                if metric in raw_metrics and raw_metrics.get(metric) is not None and np.isfinite(raw_metrics.get(metric)):
+                    if raw_metrics.get(metric) > benchmark * 1.5:
+                        report['strengths'].append(f"Strong {metric.replace('_', ' ')}: {raw_metrics.get(metric):.2f}")
+                    elif raw_metrics.get(metric) < benchmark * 0.5:
+                        report['weaknesses'].append(f"Low {metric.replace('_', ' ')}: {raw_metrics.get(metric):.2f}")
+            
+            # Similar pattern for other metric categories
+            for metric, benchmark in financial_health_benchmarks.items():
+                if metric in raw_metrics and raw_metrics.get(metric) is not None and np.isfinite(raw_metrics.get(metric)):
+                    if metric == 'debt_to_equity' or metric == 'debt_to_assets':
+                        if raw_metrics.get(metric) < benchmark * 0.5:
+                            report['strengths'].append(f"Low {metric.replace('_', ' ')}: {raw_metrics.get(metric):.2f}")
+                        elif raw_metrics.get(metric) > benchmark * 1.5:
+                            report['weaknesses'].append(f"High {metric.replace('_', ' ')}: {raw_metrics.get(metric):.2f}")
+                    else:
+                        if raw_metrics.get(metric) > benchmark * 1.5:
+                            report['strengths'].append(f"Strong {metric.replace('_', ' ')}: {raw_metrics.get(metric):.2f}")
+                        elif raw_metrics.get(metric) < benchmark * 0.5:
+                            report['weaknesses'].append(f"Low {metric.replace('_', ' ')}: {raw_metrics.get(metric):.2f}")
+            
+            # Growth metrics
+            for metric, benchmark in growth_benchmarks.items():
+                if metric in raw_metrics and raw_metrics.get(metric) is not None and np.isfinite(raw_metrics.get(metric)):
+                    if raw_metrics.get(metric) > benchmark * 1.5:
+                        report['strengths'].append(f"Strong {metric.replace('_', ' ')}: {raw_metrics.get(metric):.2f}")
+                    elif raw_metrics.get(metric) < 0:
+                        report['weaknesses'].append(f"Negative {metric.replace('_', ' ')}: {raw_metrics.get(metric):.2f}")
+            
+            # Valuation metrics
+            for metric, benchmark in valuation_benchmarks.items():
+                if metric in raw_metrics and raw_metrics.get(metric) is not None and np.isfinite(raw_metrics.get(metric)):
+                    if metric == 'dividend_yield':
+                        if raw_metrics.get(metric) > benchmark * 1.5:
+                            report['strengths'].append(f"High {metric.replace('_', ' ')}: {raw_metrics.get(metric):.2f}")
+                    elif metric in ['pe_ratio', 'price_to_book', 'price_to_sales', 'ev_to_ebitda']:
+                        if raw_metrics.get(metric) < benchmark * 0.6:
+                            report['strengths'].append(f"Low {metric.replace('_', ' ')}: {raw_metrics.get(metric):.2f}")
+                        elif raw_metrics.get(metric) > benchmark * 1.5:
+                            report['weaknesses'].append(f"High {metric.replace('_', ' ')}: {raw_metrics.get(metric):.2f}")
+        
         return {
             "ticker": ticker,
             "composite_score": float(score),
@@ -79,7 +211,6 @@ def generate_stock_report_task(ticker, score, details):
             "report": {"error": str(e)},
             "error": True
         }
-
 
 def generate_technical_report_task(ticker, score, details):
     """
@@ -487,10 +618,7 @@ def generate_monte_carlo_report_task(ticker: str, score: float, details: dict) -
         }
 
 def run_async_in_new_loop(coro):
-    """
-    Safely run an async coroutine in a new event loop.
-    This function can be called from sync code to execute an async coroutine.
-    """
+    """Safely run an async coroutine in a new event loop with proper cleanup."""
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

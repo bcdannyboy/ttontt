@@ -178,9 +178,10 @@ def generate_stock_report(ticker: str) -> dict:
         },
         'strengths': [],
         'weaknesses': [],
-        'raw_metrics': metrics,
-        'z_scores': {}
+        'raw_metrics': metrics
     }
+    # Only initialize z_scores with ticker_results if available
+    # Otherwise, leave it empty to be added by generate_stock_report_task
     if ticker_results:
         report['z_scores'] = ticker_results[0][2]['z_scores']
     profitability_benchmarks = {
@@ -256,3 +257,4 @@ def generate_stock_report(ticker: str) -> dict:
                 elif metrics.get(metric) > benchmark * 1.5:
                     report['weaknesses'].append(f"High {metric.replace('_', ' ')}: {metrics.get(metric):.2f}")
     return report
+
