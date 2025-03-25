@@ -17,28 +17,11 @@ from scipy import integrate
 import concurrent.futures
 import torch
 from functools import lru_cache
-
+from metal_coordinator import get_device, get_dtype
+DEVICE = get_device()
+TORCH_DTYPE = get_dtype()
 logger = logging.getLogger(__name__)
 
-# Determine device once at module load time
-try:
-    if torch.cuda.is_available():
-        DEVICE = torch.device("cuda")
-        TORCH_DTYPE = torch.float32  # Use float32 for both CUDA and MPS
-        logger.info(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        DEVICE = torch.device("mps")
-        TORCH_DTYPE = torch.float32  # MPS only supports float32
-        logger.info("Using MPS device")
-    else:
-        DEVICE = torch.device("cpu")
-        TORCH_DTYPE = torch.float64  # CPU can use float64
-        logger.info("Using CPU device")
-except Exception as e:
-    logger.warning(f"Error initializing device, falling back to CPU: {e}")
-    DEVICE = torch.device("cpu")
-    TORCH_DTYPE = torch.float64
-    
 # Cache for expensive CGMY calculations
 CGMY_CACHE = {}
 

@@ -7,18 +7,13 @@ import numpy as np
 import torch
 import json
 from datetime import datetime, timedelta
+from metal_coordinator import get_device, get_dtype
+device = get_device()
+logger_device = device.type.upper()
 
 # Set seed for reproducibility with both numpy and torch
 np.random.seed(42)
 torch.manual_seed(42)
-
-# Set device to MPS if available; otherwise use CPU
-if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    device = torch.device("mps")
-    logger_device = "MPS"
-else:
-    device = torch.device("cpu")
-    logger_device = "CPU"
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

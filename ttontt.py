@@ -41,33 +41,6 @@ logger = logging.getLogger('ttontt')
 # Create a list to store all tables for display at the end
 all_tables = []
 
-# Optional GPU check: using TensorFlow with macOS optimizations
-try:
-    import tensorflow as tf
-    # Enable Metal GPU acceleration on macOS
-    if 'tensorflow-metal' in tf.__version__ or (hasattr(tf, 'config') and hasattr(tf.config, 'experimental')):
-        logger.info("Enabling Metal GPU acceleration for macOS...")
-        tf.config.experimental.set_visible_devices([], 'CPU')
-        physical_gpus = tf.config.list_physical_devices('GPU')
-        if physical_gpus:
-            try:
-                for gpu in physical_gpus:
-                    tf.config.experimental.set_memory_growth(gpu, True)
-                logger.info(f"Metal GPU acceleration enabled. Found {len(physical_gpus)} GPU(s)")
-            except Exception as e:
-                logger.warning(f"Error configuring Metal GPU: {e}")
-    else:
-        gpus = tf.config.list_physical_devices('GPU')
-        if gpus:
-            logger.info("GPU(s) detected:")
-            for gpu in gpus:
-                logger.info(f" - {gpu}")
-        else:
-            logger.info("No GPU detected.")
-except ImportError:
-    logger.info("TensorFlow not installed; skipping GPU check.")
-
-
 def generate_stock_report_task(ticker, score, details):
     """
     Generates a detailed stock report for a given ticker.

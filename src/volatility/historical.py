@@ -24,29 +24,6 @@ def get_combined_historical_volatility(data, lower_q=0.25, upper_q=0.75, trading
     combine the results by window size, and compute summary statistics including
     average, standard deviation bounds, skew, and kurtosis for each volatility metric.
     
-    The returned dictionary is keyed by the window size. For each window, the dictionary
-    contains the following keys from all volatility models:
-        - 'realized'
-        - 'min'
-        - 'lower_25%'
-        - 'median'
-        - 'upper_75%'
-        - 'max'
-    
-    For each metric above, additional keys are added:
-        - 'avg_<metric>': the average of the array.
-        - 'min<metric>': the lower bound (average minus the standard deviation).
-        - 'max<metric>': the upper bound (average plus the standard deviation).
-        - 'skew_<metric>': the skew of the array.
-        - 'kurtosis_<metric>': the kurtosis of the array.
-    
-    Additionally, this function computes a "timeframe indicator" based on the realized volatility,
-    its skew, and its kurtosis. In this example the score is defined as:
-    
-        score = avg_realized + abs(skew_realized) + abs(kurtosis_realized)
-    
-    The best timeframe is the one with the lowest score.
-    
     Parameters:
         data (list[dict]): Price data to use for the calculation.
         lower_q (float): Lower quantile value for calculations.
@@ -60,58 +37,62 @@ def get_combined_historical_volatility(data, lower_q=0.25, upper_q=0.75, trading
             - combined_vols: dict with window keys and raw/statistical values.
             - best_timeframe: dict with the selected window, its score, and details.
     """
-    from openbb import obb
+    # First check if we can use OpenBB's technical module for cones calculation
+    from src.simulation.utils import get_openbb_client, openbb_has_technical
+    obb_client = get_openbb_client()
     
-    models = [
-        "std", 
-        "parkinson", 
-        "garman_klass", 
-        "hodges_tompkins", 
-        "rogers_satchell", 
-        "yang_zhang"
-    ]
     combined_vols = {}
     
-    # Collect arrays from each volatility model for each window.
-    for model in models:
-        try:
-            cones_data = obb.technical.cones(
-                data=data,
-                lower_q=lower_q,
-                upper_q=upper_q,
-                model=model,
-                trading_periods=trading_periods,
-                is_crypto=is_crypto,
-                index=index
-            )
-            for cone in cones_data.results:
-                try:
-                    window = cone.window
-                except AttributeError:
-                    logger.warning(f"Cone object does not have attribute 'window': {cone}")
-                    continue
+    # Try using OpenBB's technical module if available
+    if openbb_has_technical():
+        models = [
+            "std", 
+            "parkinson", 
+            "garman_klass", 
+            "hodges_tompkins", 
+            "rogers_satchell", 
+            "yang_zhang"
+        ]
+        
+        # Collect arrays from each volatility model for each window.
+        for model in models:
+            try:
+                cones_data = obb_client.technical.cones(
+                    data=data,
+                    lower_q=lower_q,
+                    upper_q=upper_q,
+                    model=model,
+                    trading_periods=trading_periods,
+                    is_crypto=is_crypto,
+                    index=index
+                )
+                if hasattr(cones_data, 'results'):
+                    for cone in cones_data.results:
+                        try:
+                            window = cone.window
+                        except AttributeError:
+                            logger.warning(f"Cone object does not have attribute 'window': {cone}")
+                            continue
 
-                if window not in combined_vols:
-                    combined_vols[window] = {
-                        "realized": [],
-                        "min": [],
-                        "lower_25%": [],
-                        "median": [],
-                        "upper_75%": [],
-                        "max": []
-                    }
-                combined_vols[window]["realized"].append(getattr(cone, "realized", None))
-                combined_vols[window]["min"].append(getattr(cone, "min", None))
-                combined_vols[window]["lower_25%"].append(getattr(cone, "lower_25%", None))
-                combined_vols[window]["median"].append(getattr(cone, "median", None))
-                combined_vols[window]["upper_75%"].append(getattr(cone, "upper_75%", None))
-                combined_vols[window]["max"].append(getattr(cone, "max", None))
-        except Exception as e:
-            logger.error(f"Error calculating cones for model {model}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+                        if window not in combined_vols:
+                            combined_vols[window] = {
+                                "realized": [],
+                                "min": [],
+                                "lower_25%": [],
+                                "median": [],
+                                "upper_75%": [],
+                                "max": []
+                            }
+                        combined_vols[window]["realized"].append(getattr(cone, "realized", None))
+                        combined_vols[window]["min"].append(getattr(cone, "min", None))
+                        combined_vols[window]["lower_25%"].append(getattr(cone, "lower_25%", None))
+                        combined_vols[window]["median"].append(getattr(cone, "median", None))
+                        combined_vols[window]["upper_75%"].append(getattr(cone, "upper_75%", None))
+                        combined_vols[window]["max"].append(getattr(cone, "max", None))
+            except Exception as e:
+                logger.error(f"Error calculating cones for model {model}: {e}")
     
-    # If no results were successfully calculated with obb, fall back to custom implementation
+    # If no results from OpenBB or if technical module is not available, use fallback implementation
     if not combined_vols:
         logger.warning("No volatility cones calculated with OpenBB, falling back to custom implementation")
         return _get_combined_historical_volatility_fallback(

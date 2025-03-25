@@ -163,6 +163,9 @@ class MonteCarloSimulator:
         Calibrate model parameters based on historical data.
         """
         try:
+            # Import utilities with updated OpenBB access logic
+            from src.simulation.utils import get_openbb_client, openbb_has_technical
+            
             self.price_history = await self.fetch_historical_data(days=max(252, max(self.time_horizons)))
             if self.price_history.empty:
                 logger.warning(f"No historical data available for {self.ticker}. Cannot calibrate model.")
@@ -193,19 +196,37 @@ class MonteCarloSimulator:
                         })
                     
                     # Run computation in thread pool
-                    from src.volatility.historical import get_combined_historical_volatility
-                    loop = asyncio.get_event_loop()
-                    vol_result = await loop.run_in_executor(
-                        None,
-                        lambda: get_combined_historical_volatility(
-                            data=data,
-                            lower_q=0.25,
-                            upper_q=0.75,
-                            trading_periods=252,
-                            is_crypto=False,
-                            index="date"
+                    # Check if we can use OpenBB's technical module
+                    if openbb_has_technical():
+                        # Run using OpenBB if technical module is available
+                        from src.volatility.historical import get_combined_historical_volatility
+                        loop = asyncio.get_event_loop()
+                        vol_result = await loop.run_in_executor(
+                            None,
+                            lambda: get_combined_historical_volatility(
+                                data=data,
+                                lower_q=0.25,
+                                upper_q=0.75,
+                                trading_periods=252,
+                                is_crypto=False,
+                                index="date"
+                            )
                         )
-                    )
+                    else:
+                        # Use fallback implementation if technical module is not available
+                        from src.volatility.historical import _get_combined_historical_volatility_fallback
+                        loop = asyncio.get_event_loop()
+                        vol_result = await loop.run_in_executor(
+                            None,
+                            lambda: _get_combined_historical_volatility_fallback(
+                                data=data,
+                                lower_q=0.25,
+                                upper_q=0.75,
+                                trading_periods=252,
+                                is_crypto=False,
+                                index="date"
+                            )
+                        )
                     
                     self.volatility_models, self.best_timeframe = vol_result
                     best_window = self.best_timeframe.get('window')
@@ -238,7 +259,7 @@ class MonteCarloSimulator:
             logger.error(f"Error calibrating model for {self.ticker}: {e}")
             logger.error(traceback.format_exc())
             return False
-    
+
     async def _calibrate_heston_parameters(self):
         """
         Calibrate Heston model parameters in a separate async method.

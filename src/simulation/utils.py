@@ -5,65 +5,111 @@ Utilities for Monte Carlo Simulation
 This module provides utility functions for the Monte Carlo simulation package.
 """
 
+import torch
+from metal_coordinator import get_device, get_dtype
+DEVICE = get_device()
+LOGGER_DEVICE = DEVICE.type.upper()
+
 import os
 import numpy as np
 import logging
 import multiprocessing
 from typing import Dict, Any, List, Tuple, Optional
 from functools import lru_cache
+import importlib
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Set up global constants - reduce CPU_COUNT to avoid system saturation
-CPU_COUNT = min(
-    multiprocessing.cpu_count() if os.cpu_count() <= multiprocessing.cpu_count() else os.cpu_count(),
-    os.cpu_count() // 2  # Use at most half of logical CPUs for better overall system performance
-)
+CPU_COUNT = os.cpu_count()
 
 DEFAULT_SIMULATION_COUNT = 1000
 DEFAULT_TIME_HORIZONS = [1, 5, 10, 21, 63, 126, 252]
 
-# Configure device for potential GPU acceleration
-import torch
-
-if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    DEVICE = torch.device("mps")
-    LOGGER_DEVICE = "MPS"
-elif torch.cuda.is_available():
-    DEVICE = torch.device("cuda")
-    LOGGER_DEVICE = "CUDA"
-else:
-    DEVICE = torch.device("cpu")
-    LOGGER_DEVICE = "CPU"
-
-# Set PyTorch configuration for maximum performance
-if DEVICE.type == 'cuda':
-    # Set CUDA flags for better performance
-    torch.backends.cudnn.benchmark = True 
-    torch.backends.cudnn.deterministic = False
-    logger.info(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
-    # Set memory allocation to be more aggressive
-    torch.cuda.empty_cache()
-elif DEVICE.type == 'mps':
-    torch.mps.empty_cache()
 
 logger.info(f"Using device: {LOGGER_DEVICE}")
 
-# Initialize global OpenBB client to avoid recreating it across threads/processes
-obb_client = None
+# Global variables for OpenBB client
+_obb_client = None
+_obb_version = None
 
 def initialize_openbb():
-    """Initialize the OpenBB client once per process"""
-    global obb_client
-    if obb_client is None:
+    """
+    Initialize the OpenBB client once per process and properly set up 
+    all required modules.
+    
+    This function handles different versions of the OpenBB SDK and ensures
+    the technical module is properly loaded.
+    
+    Returns:
+        OpenBB client with proper module initialization
+    """
+    global _obb_client, _obb_version
+    
+    if _obb_client is None:
         try:
-            from openbb import obb as openbb_client
-            obb_client = openbb_client
+            # First try the modern OpenBB import
+            from openbb import obb as openbb_sdk
+            _obb_client = openbb_sdk
+            _obb_version = "modern"
+            
+            # Check if the technical module exists
+            if not hasattr(_obb_client, 'technical'):
+                # Check if we need to load extensions
+                if hasattr(_obb_client, 'extensions') and callable(getattr(_obb_client.extensions, 'load', None)):
+                    logger.info("Loading OpenBB extensions")
+                    _obb_client.extensions.load("technical")
+                    
+                # If still not available, try alternative loading
+                if not hasattr(_obb_client, 'technical'):
+                    logger.warning("Technical module not found in OpenBB SDK. Attempting to load as a submodule.")
+                    try:
+                        # Try using importlib to dynamically load the module
+                        technical_module = importlib.import_module('openbb.technical')
+                        setattr(_obb_client, 'technical', technical_module)
+                    except ImportError:
+                        logger.warning("Could not load technical module directly. Using fallback implementations.")
+            
+            logger.info("OpenBB SDK initialized successfully (modern version).")
+            
         except ImportError:
-            logger.error("Failed to import OpenBB client")
-            raise
-    return obb_client
+            try:
+                # Try legacy OpenBB import
+                import openbb
+                _obb_client = openbb
+                _obb_version = "legacy"
+                
+                logger.info("OpenBB SDK initialized successfully (legacy version).")
+                
+            except ImportError:
+                logger.error("Failed to import OpenBB client. Ensure it's installed properly.")
+                raise
+    
+    return _obb_client
+
+def get_openbb_client():
+    """
+    Returns the initialized OpenBB client.
+    If not initialized, initializes it first.
+    
+    Returns:
+        OpenBB client instance
+    """
+    global _obb_client
+    if _obb_client is None:
+        _obb_client = initialize_openbb()
+    return _obb_client
+
+def openbb_has_technical():
+    """
+    Check if the technical module is available in the OpenBB client.
+    
+    Returns:
+        bool: True if available, False otherwise
+    """
+    client = get_openbb_client()
+    return hasattr(client, 'technical')
 
 def calculate_statistics(data: np.ndarray) -> Dict[str, Any]:
     """

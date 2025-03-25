@@ -36,3 +36,13 @@ def get_attribute_value(obj, attr_name, default=0):
     except (TypeError, KeyError, IndexError):
         pass
     return default
+
+def openbb_has_technical():
+    """
+    Check if the technical module is available in the OpenBB client.
+    
+    Returns:
+        bool: True if available, False otherwise
+    """
+    client = get_openbb_client()
+    return hasattr(client, 'technical')
