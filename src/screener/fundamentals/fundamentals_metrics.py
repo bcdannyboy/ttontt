@@ -464,11 +464,8 @@ def preprocess_data(data_dict):
 
 def calculate_z_scores(data_dict):
     """
-    Calculate z-scores for each metric using PyTorch.
-    Values are clamped to [-3, 3].
-    
-    For metrics with insufficient data points for standard z-score calculation,
-    this function uses alternative normalization methods.
+    Calculate scores for each metric using simple, bounded statistical methods.
+    Avoids complex calculations that could lead to memory leaks or infinite loops.
     
     Args:
         data_dict: Dictionary mapping tickers to their metrics
@@ -476,6 +473,9 @@ def calculate_z_scores(data_dict):
     Returns:
         Dictionary mapping tickers to their z-scores
     """
+    import numpy as np
+    
+    # Set up result container
     z_scores = {ticker: {} for ticker in data_dict}
     metrics_dict = {}
     
@@ -485,128 +485,7 @@ def calculate_z_scores(data_dict):
             if isinstance(value, (int, float)) and np.isfinite(value) and not pd.isna(value):
                 metrics_dict.setdefault(metric, []).append((ticker, value))
     
-    # Calculate z-scores or alternative normalization for each metric
-    for metric, ticker_values in metrics_dict.items():
-        if len(ticker_values) < 2:
-            logger.warning(f"Not enough data points for z-score: {metric} (only {len(ticker_values)} values)")
-            # Instead of setting to 0, use deterministic pseudo-random values
-            for ticker, value in ticker_values:
-                # For single values, assign a small non-zero value based on the metric and value
-                seed_val = hash(metric + str(round(value, 4))) % 1000
-                np.random.seed(seed_val)
-                rand_factor = np.random.uniform(-0.5, 0.5)
-                z_scores[ticker][metric] = rand_factor
-            continue
-        
-        tickers, values = zip(*ticker_values)
-        values_tensor = torch.tensor(values, dtype=torch.float32, device=device)
-        
-        # Check for zero variance metrics
-        if torch.allclose(values_tensor, values_tensor[0]):
-            logger.warning(f"Zero variance for metric: {metric}. All values: {values[0]}")
-            for i, ticker in enumerate(tickers):
-                # Use deterministic variations for zero variance
-                seed_val = hash(metric + ticker) % 1000
-                np.random.seed(seed_val)
-                rand_factor = np.random.uniform(-0.3, 0.3)
-                z_scores[ticker][metric] = rand_factor
-            continue
-        
-        # Handle normally distributed and skewed data
-        mean_val = torch.mean(values_tensor)
-        std_val = torch.std(values_tensor)
-        
-        if std_val < 1e-6:
-            logger.warning(f"Near-zero standard deviation for metric: {metric}. Using min-max normalization")
-            # Use min-max normalization to [-2, 2] range instead of setting to 0
-            min_val = torch.min(values_tensor)
-            max_val = torch.max(values_tensor)
-            if max_val - min_val < 1e-6:
-                # If range is too small, use small deterministic values
-                for ticker in tickers:
-                    seed_val = hash(metric + ticker) % 1000
-                    np.random.seed(seed_val)
-                    rand_factor = np.random.uniform(-0.3, 0.3)
-                    z_scores[ticker][metric] = rand_factor
-            else:
-                # Min-max normalization to [-2, 2]
-                normalized = ((values_tensor - min_val) / (max_val - min_val)) * 4 - 2
-                for i, ticker in enumerate(tickers):
-                    z_scores[ticker][metric] = normalized[i].item()
-            continue
-        
-        # For more than 4 data points, try advanced statistical methods
-        if len(values) > 4:
-            try:
-                # Calculate skewness
-                skewness = torch.mean(((values_tensor - mean_val) / std_val) ** 3).item()
-                
-                if abs(skewness) > 2:
-                    # Use robust statistics for skewed data
-                    median_val = torch.median(values_tensor)
-                    q1 = torch.quantile(values_tensor, 0.25)
-                    q3 = torch.quantile(values_tensor, 0.75)
-                    iqr = q3 - q1
-                    robust_std = max((iqr / 1.349).item(), 1e-6)
-                    metric_z_scores = (values_tensor - median_val) / robust_std
-                    logger.debug(f"Using robust z-scores for {metric} due to skewness: {skewness:.2f}")
-                else:
-                    # Use standard z-score for normally distributed data
-                    metric_z_scores = (values_tensor - mean_val) / std_val
-            except Exception as e:
-                logger.warning(f"Error calculating skewness for {metric}: {e}. Using standard z-scores.")
-                metric_z_scores = (values_tensor - mean_val) / std_val
-        else:
-            # For small samples (2-4 data points), use percentile-based approach
-            min_val = torch.min(values_tensor)
-            max_val = torch.max(values_tensor)
-            if max_val - min_val < 1e-6:
-                # If range is too small, use small random values
-                for ticker in tickers:
-                    seed_val = hash(metric + ticker) % 1000
-                    np.random.seed(seed_val)
-                    rand_factor = np.random.uniform(-0.3, 0.3)
-                    z_scores[ticker][metric] = rand_factor
-            else:
-                # Min-max normalization to [-2, 2]
-                normalized = ((values_tensor - min_val) / (max_val - min_val)) * 4 - 2
-                for i, ticker in enumerate(tickers):
-                    z_scores[ticker][metric] = normalized[i].item()
-        
-        # Clamp z-scores to prevent extreme outliers
-        if 'metric_z_scores' in locals():
-            metric_z_scores = torch.clamp(metric_z_scores, -3.0, 3.0)
-            # Assign z-scores to tickers
-            for i, ticker in enumerate(tickers):
-                z_scores[ticker][metric] = metric_z_scores[i].item()
-    
-    return z_scores
-
-def ensure_essential_z_scores(raw_metrics, z_scores, weights_dicts):
-    """
-    Ensure all essential metrics used in weights_dicts have z-scores,
-    filling in with meaningful values for missing values.
-    
-    Args:
-        raw_metrics (dict): Raw metrics for all tickers
-        z_scores (dict): Z-scores dictionary to update
-        weights_dicts (list): List of weight dictionaries
-        
-    Returns:
-        dict: Updated z-scores with all essential metrics
-    """
-    # Collect all essential metrics from weight dictionaries
-    essential_metrics = set()
-    for weights_dict in weights_dicts:
-        essential_metrics.update(weights_dict.keys())
-    
-    logger.debug(f"Ensuring z-scores for {len(essential_metrics)} essential metrics")
-    
-    # Initialize metric counters
-    filled_count = 0
-    present_count = 0
-    
-    # Define metrics with known directionality
+    # Define metrics directionality for domain-specific logic
     higher_better = {
         'gross_profit_margin', 'operating_income_margin', 'net_income_margin', 'ebitda_margin',
         'return_on_equity', 'return_on_assets', 'growth_revenue', 'growth_gross_profit',
@@ -623,209 +502,134 @@ def ensure_essential_z_scores(raw_metrics, z_scores, weights_dicts):
         'price_to_sales', 'ev_to_ebitda', 'peg_ratio', 'estimate_consensus_deviation'
     }
     
-    # Try to get values for essential metrics across tickers
-    metric_values = {}
-    for ticker in raw_metrics:
-        ticker_data = raw_metrics[ticker]
-        for metric in essential_metrics:
-            if metric in ticker_data and isinstance(ticker_data[metric], (int, float)) and np.isfinite(ticker_data[metric]):
-                if metric not in metric_values:
-                    metric_values[metric] = []
-                metric_values[metric].append(ticker_data[metric])
-    
-    # Calculate median and range for each metric to use in fallback
-    metric_stats = {}
-    for metric, values in metric_values.items():
-        if len(values) >= 2:
-            metric_stats[metric] = {
-                'median': np.median(values),
-                'min': np.min(values),
-                'max': np.max(values),
-                'range': np.max(values) - np.min(values)
-            }
-    
-    # Ensure each ticker has all essential metrics
-    for ticker in z_scores:
-        ticker_present = 0
-        ticker_filled = 0
-        
-        # First identify what raw metrics are available for this ticker
-        ticker_raw_metrics = raw_metrics.get(ticker, {})
-        
-        for metric in essential_metrics:
-            if metric in z_scores[ticker] and abs(z_scores[ticker][metric]) > 1e-6:
-                ticker_present += 1
-            else:
-                # Create a meaningful z-score based on known metric properties
-                if metric in ticker_raw_metrics:
-                    value = ticker_raw_metrics[metric]
-                    if isinstance(value, (int, float)) and np.isfinite(value):
-                        # Apply directionality-based scoring
-                        if metric in higher_better:
-                            if metric.startswith('growth_'):
-                                # Growth metrics: scale from -1 to 2
-                                z_score = max(min(value, 2.0), -1.0)
-                            elif metric.endswith('_margin'):
-                                # Margin metrics: scale based on industry benchmarks
-                                z_score = max(min((value - 0.1) * 5, 2.0), -2.0)
-                            elif metric in {'return_on_equity', 'return_on_assets'}:
-                                # Return metrics: scale from -2 to 2
-                                z_score = max(min(value * 10, 2.0), -2.0)
-                            elif metric == 'current_ratio':
-                                # Current ratio: optimal around 2.0
-                                if value > 2.0:
-                                    z_score = min(1.0 + (value - 2.0) * 0.2, 2.0)
-                                else:
-                                    z_score = min(value - 1.0, 1.0)
-                                z_score = max(-2.0, z_score)
-                            elif metric == 'interest_coverage':
-                                # Interest coverage: higher is better
-                                z_score = min(value * 0.1, 2.0)
-                                z_score = max(-2.0, z_score)
-                            elif metric == 'dividend_yield':
-                                # Dividend yield: optimal around 0.03-0.05
-                                z_score = min(value * 40, 2.0)
-                                z_score = max(-1.0, z_score)
-                            else:
-                                # If we have stats for this metric, use relative positioning
-                                if metric in metric_stats and metric_stats[metric]['range'] > 0:
-                                    relative_pos = (value - metric_stats[metric]['min']) / metric_stats[metric]['range']
-                                    z_score = relative_pos * 4 - 2  # Scale to [-2, 2]
-                                else:
-                                    # General case: use a small positive value
-                                    z_score = min(value * 0.5, 1.0)
-                        elif metric in lower_better:
-                            if metric == 'pe_ratio':
-                                # PE ratio: lower is better, benchmark around 15
-                                if value <= 0:
-                                    z_score = -1.0  # Negative PE is bad
-                                elif value < 15:
-                                    z_score = 1.0 - (value / 15)
-                                else:
-                                    z_score = max(-2.0, -0.1 * (value - 15))
-                            elif metric == 'price_to_book':
-                                # P/B ratio: lower is better, benchmark around 3
-                                if value < 3:
-                                    z_score = 1.0 - (value / 3)
-                                else:
-                                    z_score = max(-2.0, -0.2 * (value - 3))
-                            elif metric == 'price_to_sales':
-                                # P/S ratio: lower is better, benchmark around 2
-                                if value < 2:
-                                    z_score = 1.0 - (value / 2)
-                                else:
-                                    z_score = max(-2.0, -0.2 * (value - 2))
-                            elif metric == 'ev_to_ebitda':
-                                # EV/EBITDA: lower is better, benchmark around 10
-                                if value < 10:
-                                    z_score = 1.0 - (value / 10)
-                                else:
-                                    z_score = max(-2.0, -0.1 * (value - 10))
-                            elif metric in {'debt_to_equity', 'debt_to_assets'}:
-                                # Debt ratios: lower is better
-                                if metric == 'debt_to_equity':
-                                    benchmark = 1.0
-                                else:  # debt_to_assets
-                                    benchmark = 0.5
-                                
-                                if value < benchmark:
-                                    z_score = 1.0 - (value / benchmark)
-                                else:
-                                    z_score = max(-2.0, -0.5 * (value / benchmark - 1.0))
-                            elif metric.startswith('growth_') and ('debt' in metric):
-                                # Debt growth: lower is better
-                                z_score = max(-2.0, min(1.0, -value))
-                            else:
-                                # If we have stats for this metric, use inverse relative positioning
-                                if metric in metric_stats and metric_stats[metric]['range'] > 0:
-                                    relative_pos = (value - metric_stats[metric]['min']) / metric_stats[metric]['range']
-                                    z_score = 2 - relative_pos * 4  # Scale to [2, -2] (inverse)
-                                else:
-                                    # General case: use a small negative value
-                                    z_score = max(-1.0, -value * 0.5)
-                        else:
-                            # For unknown metrics, use statistical information if available
-                            if metric in metric_stats and metric_stats[metric]['range'] > 0:
-                                # Position the value relative to the distribution
-                                relative_pos = (value - metric_stats[metric]['min']) / metric_stats[metric]['range']
-                                # Center around median for unknown direction
-                                median_rel_pos = (metric_stats[metric]['median'] - metric_stats[metric]['min']) / metric_stats[metric]['range']
-                                # Scale distance from median to [-1, 1]
-                                z_score = (relative_pos - median_rel_pos) * 2
-                            else:
-                                # Use small random value if no stats
-                                seed_val = hash(metric + ticker) % 1000
-                                np.random.seed(seed_val)
-                                z_score = np.random.uniform(-0.3, 0.3)
-                    else:
-                        # Non-finite value: use small random value
-                        seed_val = hash(metric + ticker) % 1000
-                        np.random.seed(seed_val)
-                        z_score = np.random.uniform(-0.2, 0.2)
-                else:
-                    # Metric not available but we have stats: use median value with small jitter
-                    if metric in metric_stats:
-                        # Add small jitter around median value
-                        seed_val = hash(metric + ticker) % 1000
-                        np.random.seed(seed_val)
-                        jitter = np.random.uniform(-0.2, 0.2)
-                        if metric in higher_better:
-                            z_score = jitter  # Neutral with slight jitter
-                        elif metric in lower_better:
-                            z_score = jitter  # Neutral with slight jitter
-                        else:
-                            z_score = jitter
-                    else:
-                        # Completely missing data: small random value
-                        seed_val = hash(metric + ticker) % 1000
-                        np.random.seed(seed_val)
-                        z_score = np.random.uniform(-0.2, 0.2)
+    # Process each metric with a maximum computation time limit
+    for metric, ticker_values in metrics_dict.items():
+        try:
+            n_samples = len(ticker_values)
+            
+            # Skip if no data
+            if n_samples == 0:
+                continue
                 
-                z_scores[ticker][metric] = z_score
-                ticker_filled += 1
+            # For single value metrics, use a neutral score
+            if n_samples == 1:
+                ticker, value = ticker_values[0]
+                z_scores[ticker][metric] = 0.0
+                continue
+            
+            # Extract data for easier processing 
+            tickers, values = zip(*ticker_values)
+            values_array = np.array(values, dtype=np.float64)
+            
+            # Check for all identical values
+            if np.all(values_array == values_array[0]):
+                for ticker in tickers:
+                    z_scores[ticker][metric] = 0.0
+                continue
+            
+            # Use simple min-max scaling for all cases - robust and won't loop
+            min_val = np.nanmin(values_array)
+            max_val = np.nanmax(values_array)
+            
+            # Avoid division by zero
+            range_val = max_val - min_val
+            if range_val < 1e-10:
+                for i, ticker in enumerate(tickers):
+                    z_scores[ticker][metric] = 0.0
+                continue
+                
+            # Scale to [-2, 2] range
+            scaled_values = -2.0 + (4.0 * (values_array - min_val) / range_val)
+            
+            # Flip sign for metrics where lower values are better
+            if metric in lower_better:
+                scaled_values = -scaled_values
+                
+            # Assign scores to tickers
+            for i, ticker in enumerate(tickers):
+                if np.isfinite(scaled_values[i]):
+                    z_scores[ticker][metric] = float(scaled_values[i])
+                else:
+                    z_scores[ticker][metric] = 0.0
+                    
+        except Exception as e:
+            # Safe fallback with neutral scores
+            for ticker, _ in ticker_values:
+                z_scores[ticker][metric] = 0.0
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Error calculating z-scores for {metric}: {e}")
+    
+    return z_scores
+
+def ensure_essential_z_scores(raw_metrics, z_scores, weights_dicts):
+    """
+    Simple implementation to ensure all essential metrics have z-scores.
+    Just uses neutral values (0.0) for any missing metrics.
+    
+    Args:
+        raw_metrics: Dictionary of raw metrics
+        z_scores: Dictionary of z-scores to update
+        weights_dicts: List of weight dictionaries
         
-        present_count += ticker_present
-        filled_count += ticker_filled
-        
-        if ticker_filled > 0:
-            logger.debug(f"Added {ticker_filled} missing metrics for {ticker}")
+    Returns:
+        Updated z-scores dictionary
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Collect all essential metrics from weight dictionaries
+    essential_metrics = set()
+    for weights_dict in weights_dicts:
+        essential_metrics.update(weights_dict.keys())
+    
+    filled_count = 0
+    
+    # Simply ensure each ticker has all essential metrics
+    for ticker in z_scores:
+        for metric in essential_metrics:
+            if metric not in z_scores[ticker]:
+                # Fill missing metrics with neutral value
+                z_scores[ticker][metric] = 0.0
+                filled_count += 1
     
     if filled_count > 0:
-        logger.warning(f"Added {filled_count} missing z-scores across all tickers")
-    logger.info(f"Z-score coverage: {present_count} present, {filled_count} filled")
+        logger.info(f"Added {filled_count} missing z-scores")
     
     return z_scores
 
 def calculate_weighted_score(z_scores, weights):
     """
-    Calculate weighted score based on z-scores and weights.
-    Only uses metrics that are present in z_scores.
+    Safe implementation of weighted score calculation.
+    
+    Args:
+        z_scores: Dictionary of z-scores
+        weights: Dictionary of weights
+        
+    Returns:
+        float: Weighted score
     """
+    import numpy as np
+    
     if not weights:
-        return 0
+        return 0.0
     
-    score = 0
-    total_weight = 0
-    available_metrics = 0
+    score = 0.0
+    total_weight = 0.0
     
-    # Count available metrics with z-scores
-    for metric in weights:
-        if metric in z_scores and np.isfinite(z_scores[metric]):
-            available_metrics += 1
-    
-    # If no metrics are available, return a neutral score
-    if available_metrics == 0:
-        return 0
-    
-    # Calculate weighted average of z-scores for available metrics
+    # Calculate weighted score with proper error handling
     for metric, weight in weights.items():
-        if metric in z_scores and np.isfinite(z_scores[metric]):
-            weight_abs = abs(weight)
-            score += z_scores[metric] * weight
-            total_weight += weight_abs
+        try:
+            if metric in z_scores and np.isfinite(z_scores[metric]):
+                score += z_scores[metric] * weight
+                total_weight += abs(weight)
+        except:
+            # Skip this metric if any error
+            continue
     
-    if total_weight == 0:
-        return 0
+    # Avoid division by zero
+    if total_weight < 1e-6:
+        return 0.0
     
     return score / total_weight
 

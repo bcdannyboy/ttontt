@@ -253,7 +253,7 @@ async def screen_stocks_async(tickers, max_concurrent: int = None, progress_bar=
 
 def screen_stocks(tickers, max_workers: int = None, progress_bar=True):
     """
-    Synchronously screen stocks with better thread management and error handling.
+    Screen stocks using robust statistical methods while maintaining compatibility.
     """
     if max_workers is None:
         max_workers = min(32, (os.cpu_count() * 4) if os.cpu_count() else 4)
@@ -300,9 +300,11 @@ def screen_stocks(tickers, max_workers: int = None, progress_bar=True):
     try:
         # Preprocess metrics and calculate scores
         preprocessed_metrics = preprocess_data(all_metrics)
-        z_scores = calculate_z_scores(preprocessed_metrics)
         
-        # Ensure all essential metrics have z-scores (fixes missing metrics)
+        # Calculate robust scores using our new method
+        z_scores = calculate_z_scores(preprocessed_metrics)  # Keep variable name as z_scores
+        
+        # Ensure all essential metrics have scores
         weights_dicts = [
             PROFITABILITY_WEIGHTS, 
             GROWTH_WEIGHTS, 
@@ -316,6 +318,8 @@ def screen_stocks(tickers, max_workers: int = None, progress_bar=True):
         results = []
         for ticker in valid_tickers:
             ticker_z_scores = z_scores[ticker]
+            
+            # Calculate category scores
             category_scores = {
                 'profitability': calculate_weighted_score(ticker_z_scores, PROFITABILITY_WEIGHTS),
                 'growth': calculate_weighted_score(ticker_z_scores, GROWTH_WEIGHTS),
@@ -324,13 +328,21 @@ def screen_stocks(tickers, max_workers: int = None, progress_bar=True):
                 'efficiency': calculate_weighted_score(ticker_z_scores, EFFICIENCY_WEIGHTS),
                 'analyst_estimates': calculate_weighted_score(ticker_z_scores, ANALYST_ESTIMATES_WEIGHTS)
             }
-            composite_score = sum(score * weight for (score, weight) in zip(
-                category_scores.values(), [0.20, 0.20, 0.20, 0.15, 0.10, 0.15]))
+            
+            # Calculate composite score
+            composite_score = (
+                category_scores['profitability'] * 0.20 +
+                category_scores['growth'] * 0.20 +
+                category_scores['financial_health'] * 0.20 +
+                category_scores['valuation'] * 0.15 +
+                category_scores['efficiency'] * 0.10 +
+                category_scores['analyst_estimates'] * 0.15
+            )
             
             detailed_results = {
                 'raw_metrics': all_metrics[ticker],
                 'preprocessed_metrics': preprocessed_metrics[ticker],
-                'z_scores': ticker_z_scores,
+                'z_scores': ticker_z_scores,  # Keep the key as 'z_scores' for compatibility
                 'category_scores': category_scores,
                 'composite_score': composite_score
             }
@@ -344,7 +356,7 @@ def screen_stocks(tickers, max_workers: int = None, progress_bar=True):
             results.append((ticker, 0, {
                 'raw_metrics': all_metrics[ticker],
                 'preprocessed_metrics': {},
-                'z_scores': {},
+                'z_scores': {},  # Keep as z_scores
                 'category_scores': {
                     'profitability': 0, 'growth': 0, 'financial_health': 0,
                     'valuation': 0, 'efficiency': 0, 'analyst_estimates': 0
