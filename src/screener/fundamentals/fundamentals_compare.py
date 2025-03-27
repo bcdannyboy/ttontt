@@ -85,41 +85,54 @@ def compare_stocks(tickers: list, use_async: bool = True) -> pd.DataFrame:
         df[col] = df[col].round(4)
     return df
 
-async def analyze_with_peers(ticker, stock_data, all_results=None):
+async def analyze_with_peers(ticker, stock_data, all_results=None, timeout=20):
     """
-    Analyze a stock in comparison to its peers.
+    Analyze a stock in comparison to its peers with timeout.
+    If no peers are found, returns default values without peer analysis.
     
     Args:
         ticker (str): The ticker symbol
         stock_data (tuple): Tuple containing (ticker, score, details)
         all_results (dict, optional): Dictionary of all screening results for faster lookup
+        timeout (int): Timeout in seconds (default 20 seconds)
         
     Returns:
         dict: Peer analysis data
     """
     ticker, score, details = stock_data
     
-    # Get the peers list for this ticker
-    peers_list = await get_peers_async(ticker)
+    # Default return structure if no peers are found
+    default_result = {
+        'peer_average': score,
+        'peer_delta': 0.0,
+        'peer_percentile': 50.0,
+        'peer_count': 0,
+        'peer_std_dev': 0.0,
+        'category_percentiles': {
+            'profitability': 50.0,
+            'growth': 50.0,
+            'financial_health': 50.0,
+            'valuation': 50.0,
+            'efficiency': 50.0,
+            'analyst_estimates': 50.0
+        },
+        'peers': []
+    }
     
-    # If no peers or no peer data available, return basic info
+    # Get the peers list for this ticker with timeout
+    try:
+        peers_list = await asyncio.wait_for(get_peers_async(ticker), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(f"Timeout getting peers for {ticker}, skipping peer analysis")
+        return default_result
+    except Exception as e:
+        logger.error(f"Error getting peers for {ticker}: {e}")
+        return default_result
+    
+    # If no peers found, return default values
     if not peers_list:
-        return {
-            'peer_average': score,
-            'peer_delta': 0.0,
-            'peer_percentile': 50.0,
-            'peer_count': 0,
-            'peer_std_dev': 0.0,
-            'category_percentiles': {
-                'profitability': 50.0,
-                'growth': 50.0,
-                'financial_health': 50.0,
-                'valuation': 50.0,
-                'efficiency': 50.0,
-                'analyst_estimates': 50.0
-            },
-            'peers': []
-        }
+        logger.info(f"No peers found for {ticker}, skipping peer analysis")
+        return default_result
     
     # Get peer data
     peer_data = []
@@ -154,28 +167,50 @@ async def analyze_with_peers(ticker, stock_data, all_results=None):
                     'key_metrics': extract_key_metrics(peer_details.get('raw_metrics', {}))
                 })
     else:
-        # We need to fetch peer data
-        peer_results = await screen_stocks_async([p for p in peers_list if p != ticker])
-        peer_data_dict = {p[0]: (p[1], p[2]) for p in peer_results}
-        
-        for peer in peers_list:
-            if peer in peer_data_dict and peer != ticker:
-                peer_score, peer_details = peer_data_dict[peer]
-                peer_scores.append(peer_score)
+        # We need to fetch peer data with timeout
+        try:
+            # Import locally to avoid circular imports
+            from src.screener.fundamentals.fundamentals_screen import screen_stocks_async
+            
+            # Fetch data for peers with timeout
+            peer_results_task = screen_stocks_async([p for p in peers_list if p != ticker])
+            peer_results = await asyncio.wait_for(peer_results_task, timeout=timeout)
+            
+            if not peer_results:
+                logger.warning(f"No peer screening results for {ticker}, skipping peer analysis")
+                return default_result
                 
-                # Track category scores for percentile calculations
-                peer_categories = peer_details.get('category_scores', {})
-                for category, scores in category_peer_scores.items():
-                    if category in peer_categories:
-                        scores.append(peer_categories[category])
-                
-                # Add peer information
-                peer_data.append({
-                    'ticker': peer,
-                    'score': peer_score,
-                    'category_scores': peer_categories,
-                    'key_metrics': extract_key_metrics(peer_details.get('raw_metrics', {}))
-                })
+            peer_data_dict = {p[0]: (p[1], p[2]) for p in peer_results}
+            
+            for peer in peers_list:
+                if peer in peer_data_dict and peer != ticker:
+                    peer_score, peer_details = peer_data_dict[peer]
+                    peer_scores.append(peer_score)
+                    
+                    # Track category scores for percentile calculations
+                    peer_categories = peer_details.get('category_scores', {})
+                    for category, scores in category_peer_scores.items():
+                        if category in peer_categories:
+                            scores.append(peer_categories[category])
+                    
+                    # Add peer information
+                    peer_data.append({
+                        'ticker': peer,
+                        'score': peer_score,
+                        'category_scores': peer_categories,
+                        'key_metrics': extract_key_metrics(peer_details.get('raw_metrics', {}))
+                    })
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout fetching peer data for {ticker}, skipping peer analysis")
+            return default_result
+        except Exception as e:
+            logger.error(f"Error fetching peer data for {ticker}: {e}")
+            return default_result
+    
+    # If no valid peer data was found, return default values
+    if not peer_scores:
+        logger.warning(f"No valid peer data for {ticker}, skipping peer analysis")
+        return default_result
     
     # Calculate percentiles for each category
     category_percentiles = {}
@@ -191,17 +226,11 @@ async def analyze_with_peers(ticker, stock_data, all_results=None):
             category_percentiles[category] = 50.0
     
     # Calculate overall peer statistics
-    if peer_scores:
-        peer_average = np.mean(peer_scores)
-        peer_std_dev = np.std(peer_scores)
-        below_count = sum(1 for s in peer_scores if s < score)
-        peer_percentile = round((below_count / len(peer_scores)) * 100, 2)
-        peer_delta = round(score - peer_average, 4)
-    else:
-        peer_average = score
-        peer_std_dev = 0.0
-        peer_percentile = 50.0
-        peer_delta = 0.0
+    peer_average = np.mean(peer_scores)
+    peer_std_dev = np.std(peer_scores)
+    below_count = sum(1 for s in peer_scores if s < score)
+    peer_percentile = round((below_count / len(peer_scores)) * 100, 2)
+    peer_delta = round(score - peer_average, 4)
     
     return {
         'peer_average': peer_average,

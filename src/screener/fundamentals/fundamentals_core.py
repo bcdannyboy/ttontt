@@ -147,14 +147,15 @@ def get_openbb_client():
         thread_local.openbb_client = obb
     return thread_local.openbb_client
 
-async def rate_limited_api_call(func, *args, provider='default', cache_ttl=86400, **kwargs):
+async def rate_limited_api_call(func, *args, provider='default', cache_ttl=86400, timeout=30, **kwargs):
     """
-    Rate limiting for API calls with async support, caching, and provider-specific limits.
+    Rate limiting for API calls with async support, caching, provider-specific limits, and timeout.
     
     Args:
         func: The API function to call
         provider: The data provider to use (default, fmp, intrinio, etc.)
         cache_ttl: Cache time-to-live in seconds (default 24 hours)
+        timeout: Timeout for the API call in seconds (default 30 seconds)
         *args, **kwargs: Arguments to pass to the API function
     
     Returns:
@@ -214,13 +215,18 @@ async def rate_limited_api_call(func, *args, provider='default', cache_ttl=86400
             # Add current timestamp to the list
             api_call_timestamps[provider_key].append(time.time())
         
-        # Execute the API call
+        # Execute the API call with timeout
         try:
             if asyncio.iscoroutinefunction(func):
-                result = await func(*args, **kwargs)
+                # Add timeout to the coroutine
+                result = await asyncio.wait_for(func(*args, **kwargs), timeout=timeout)
             else:
                 loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+                # Add timeout to the executor
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: func(*args, **kwargs)),
+                    timeout=timeout
+                )
             
             # Update caches with the result
             with api_cache_lock:
@@ -252,6 +258,10 @@ async def rate_limited_api_call(func, *args, provider='default', cache_ttl=86400
                 logger.warning(f"Error writing API cache to disk: {e}")
             
             return result
+        
+        except asyncio.TimeoutError:
+            logger.error(f"API call timed out after {timeout}s for {provider}: {func.__name__}({args}, {kwargs})")
+            raise Exception(f"API call error: \n[Timeout] -> Timed out after {timeout}s. Try again later.")
         
         except Exception as e:
             # Check if error is about subscription/access

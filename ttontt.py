@@ -617,13 +617,29 @@ def generate_monte_carlo_report_task(ticker: str, score: float, details: dict) -
             "monte_carlo_error": str(e)
         }
 
-def run_async_in_new_loop(coro):
-    """Safely run an async coroutine in a new event loop with proper cleanup."""
+def run_async_in_new_loop(coro, timeout=60):
+    """Safely run an async coroutine in a new event loop with proper cleanup and timeout.
+    
+    Args:
+        coro: The coroutine to run
+        timeout: Timeout in seconds (default 60 seconds)
+        
+    Returns:
+        The result of the coroutine, or None if timed out or error
+    """
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(coro)
+        # Add timeout to the coroutine
+        return loop.run_until_complete(asyncio.wait_for(coro, timeout=timeout))
+    except asyncio.TimeoutError:
+        logger.error(f"Operation timed out after {timeout}s")
+        return None
+    except Exception as e:
+        logger.error(f"Error running coroutine: {e}")
+        logger.error(traceback.format_exc())
+        return None
     finally:
         try:
             # Cleanup any remaining tasks

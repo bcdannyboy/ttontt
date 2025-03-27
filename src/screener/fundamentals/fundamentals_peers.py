@@ -6,17 +6,26 @@ from src.screener.fundamentals.fundamentals_core import get_openbb_client, rate_
 
 logger = logging.getLogger(__name__)
 
-async def get_peers_async(ticker: str):
+async def get_peers_async(ticker: str, timeout=20):
     """
-    Asynchronously fetch peers for a given ticker using OpenBB API.
+    Asynchronously fetch peers for a given ticker using OpenBB API with timeout.
     Returns a list of peer ticker symbols.
+    
+    Args:
+        ticker (str): The ticker symbol to fetch peers for
+        timeout (int): Timeout in seconds (default 20 seconds)
+        
+    Returns:
+        list: List of peer ticker symbols, or empty list if error or timeout
     """
     obb_client = get_openbb_client()
     try:
+        # Add timeout to the API call
         response = await rate_limited_api_call(
             obb_client.equity.compare.peers, 
             symbol=ticker, 
-            provider='fmp'
+            provider='fmp',
+            timeout=timeout
         )
         if response and hasattr(response, 'results'):
             result = response.results
@@ -36,6 +45,7 @@ async def get_peers_async(ticker: str):
     except Exception as e:
         logger.error(f"Error fetching peers for {ticker}: {e}")
         return []
+
 
 async def analyze_ticker_with_peers(ticker: str, depth: int = 1, visited=None):
     """
