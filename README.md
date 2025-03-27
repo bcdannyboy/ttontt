@@ -12,35 +12,123 @@ TTONTT is a Python-based system that helps traders make informed decisions using
 
 The system processes a list of stock tickers, fetches financial data through the OpenBB SDK, and provides a comprehensive analysis with clear buy/sell signals.
 
+## API Key Requirement
+
+**Important**: This system requires an API key from Financial Modeling Prep (FMP) to fetch financial data through OpenBB. 
+
+1. Sign up for an API key at [Financial Modeling Prep](https://site.financialmodelingprep.com/developer/docs/)
+2. Configure OpenBB with your API key following the [OpenBB Documentation](https://docs.openbb.co/)
+
+Without a valid API key, the system will be unable to fetch fundamental and technical data.
+
 ## Features
 
-- **Multi-factor Fundamental Screening**:
-  - Profitability metrics (margins, ROE, ROA)
-  - Growth indicators (revenue, earnings, EPS growth)
-  - Financial health analysis (debt ratios, liquidity)
-  - Valuation metrics (P/E, P/B, EV/EBITDA)
-  - Efficiency metrics (turnover ratios)
-  - Analyst estimates analysis
+### Multi-factor Fundamental Screening
 
-- **Technical Analysis**:
-  - Trend indicators (SMA/EMA crosses, price relative to moving averages)
-  - Momentum indicators (RSI, stochastic, CCI)
-  - Volatility analysis (Bollinger Bands, ATR)
-  - Volume indicators (OBV, AD Line, VWAP)
+The system evaluates stocks across 6 major categories with specific metrics:
 
-- **Advanced Monte Carlo Simulations**:
-  - Geometric Brownian Motion (GBM)
-  - Heston Stochastic Volatility Model
-  - SABR-CGMY Model
+#### 1. Profitability Metrics
+- Gross Profit Margin
+- Operating Income Margin
+- Net Income Margin
+- EBITDA Margin
+- Return on Equity (ROE)
+- Return on Assets (ROA)
 
-- **Peer Comparison**:
-  - Compare metrics against industry peers
-  - Relative performance analysis
+#### 2. Growth Indicators
+- Revenue Growth
+- Gross Profit Growth
+- EBITDA Growth
+- Operating Income Growth
+- Net Income Growth
+- EPS Growth
+- Total Assets Growth
+- Shareholders' Equity Growth
 
-- **Rich Terminal Output**:
-  - Colored, formatted tables
-  - Progress bars
-  - Detailed analysis reports
+#### 3. Financial Health
+- Current Ratio
+- Quick Ratio
+- Debt-to-Equity Ratio
+- Debt-to-Assets Ratio
+- Interest Coverage Ratio
+- Cash-to-Debt Ratio
+- Total Debt Growth
+- Net Debt Growth
+
+#### 4. Valuation Metrics
+- P/E Ratio
+- Price-to-Book Ratio
+- Price-to-Sales Ratio
+- EV/EBITDA
+- Dividend Yield
+- PEG Ratio
+
+#### 5. Efficiency Metrics
+- Asset Turnover
+- Inventory Turnover
+- Receivables Turnover
+- Cash Conversion Cycle
+- CAPEX-to-Revenue Ratio
+
+#### 6. Analyst Estimates
+- EPS Estimate Accuracy
+- Revenue Estimate Accuracy
+- Forward Sales Growth
+- Forward EBITDA Growth
+- Estimate Revision Momentum
+- Estimate Consensus Deviation
+
+### Technical Analysis
+
+The system calculates and analyzes numerous technical indicators:
+
+#### 1. Trend Indicators
+- SMA Cross Signal (50-day vs 200-day)
+- EMA Cross Signal (12-day vs 26-day)
+- Price Relative to SMA
+- Price Relative to EMA
+- ADX Trend Strength
+- Ichimoku Cloud Signal
+- MACD Signal
+- Bollinger Band Position
+
+#### 2. Momentum Indicators
+- RSI Signal (14-day)
+- Stochastic Oscillator Signal
+- CCI Signal
+- Clenow Momentum
+- Fisher Transform
+- 1-Month Price Performance
+- 3-Month Price Performance
+
+#### 3. Volatility Indicators
+- ATR Percent
+- Bollinger Band Width
+- Keltner Channel Width
+- Volatility Cones
+- Donchian Channel Width
+- Price Target Upside
+
+#### 4. Volume Indicators
+- OBV Trend
+- A/D Line Trend
+- A/D Oscillator Signal
+- VWAP Position
+- Volume Trend
+
+### Advanced Monte Carlo Simulations
+- Geometric Brownian Motion (GBM)
+- Heston Stochastic Volatility Model
+- SABR-CGMY Model
+
+### Peer Comparison
+- Compare metrics against industry peers
+- Relative performance analysis
+
+### Rich Terminal Output
+- Colored, formatted tables
+- Progress bars
+- Detailed analysis reports
 
 ## Installation
 
@@ -65,6 +153,73 @@ pip install -r requirements.txt
 ```bash
 pip install openbb
 ```
+
+5. Configure OpenBB with your FMP API key:
+```bash
+# Through Python
+from openbb import obb
+obb.login(provider="fmp", api_key="YOUR_FMP_API_KEY")
+
+# Or through OpenBB Terminal (if installed)
+openbb login --provider fmp --key YOUR_FMP_API_KEY
+```
+
+## OpenBB Functions Used
+
+The system leverages numerous OpenBB functions for data retrieval and analysis:
+
+### Fundamental Data Functions
+- `obb.equity.fundamental.income` - Income statement data
+- `obb.equity.fundamental.balance` - Balance sheet data
+- `obb.equity.fundamental.cash` - Cash flow statement data
+- `obb.equity.fundamental.income_growth` - Income growth metrics
+- `obb.equity.fundamental.balance_growth` - Balance sheet growth metrics
+- `obb.equity.fundamental.cash_growth` - Cash flow growth metrics
+- `obb.equity.fundamental.ratios` - Financial ratios
+- `obb.equity.fundamental.metrics` - Market metrics
+- `obb.equity.fundamental.dividends` - Dividend data
+- `obb.equity.fundamental.earnings` - Earnings data
+- `obb.equity.fundamental.overview` - Company overview data
+
+### Estimates and Comparison Functions
+- `obb.equity.estimates.historical` - Historical analyst estimates
+- `obb.equity.estimates.forward_sales` - Forward sales estimates
+- `obb.equity.estimates.forward_ebitda` - Forward EBITDA estimates
+- `obb.equity.estimates.consensus` - Analyst consensus
+- `obb.equity.estimates.price_target` - Price targets
+- `obb.equity.compare.peers` - Peer company data
+
+### Technical Analysis Functions
+- `obb.equity.price.historical` - Historical price data
+- `obb.equity.price.performance` - Price performance metrics
+- `obb.technical.sma` - Simple Moving Average
+- `obb.technical.ema` - Exponential Moving Average
+- `obb.technical.bbands` - Bollinger Bands
+- `obb.technical.kc` - Keltner Channels
+- `obb.technical.macd` - MACD indicator
+- `obb.technical.rsi` - Relative Strength Index
+- `obb.technical.stoch` - Stochastic Oscillator
+- `obb.technical.cci` - Commodity Channel Index
+- `obb.technical.adx` - Average Directional Index
+- `obb.technical.obv` - On-Balance Volume
+- `obb.technical.ad` - Accumulation/Distribution Line
+- `obb.technical.atr` - Average True Range
+- `obb.technical.donchian` - Donchian Channels
+- `obb.technical.fisher` - Fisher Transform
+- `obb.technical.ichimoku` - Ichimoku Cloud
+- `obb.technical.adosc` - A/D Oscillator
+- `obb.technical.vwap` - Volume Weighted Average Price
+- `obb.technical.clenow` - Clenow Momentum
+- `obb.technical.cones` - Volatility Cones
+
+### Discovery Functions
+- `obb.equity.discovery.growth_tech` - Growth tech stocks
+- `obb.equity.discovery.undervalued_large_caps` - Undervalued large caps
+- `obb.equity.discovery.aggressive_small_caps` - Aggressive small caps
+- `obb.equity.discovery.undervalued_growth` - Undervalued growth stocks
+- `obb.equity.discovery.gainers` - Biggest gainers
+- `obb.equity.discovery.losers` - Biggest losers
+- `obb.equity.discovery.active` - Most active stocks
 
 ## Usage
 
@@ -128,11 +283,3 @@ Results are saved to JSON files in the `output` directory:
 4. **final_json_[timestamp].json** - Comprehensive quartile-based analysis that combines all results
 
 These JSON files can be used for further analysis or integration with other systems.
-
-## Project Structure
-
-- `ttontt.py` - Main entry point
-- `tickers.py` - List of stocks to analyze
-- `metal_coordinator.py` - Device management (CPU/GPU)
-- `src/screener/` - Fundamental and technical analysis
-- `src/simulation/` - Monte Carlo simulation models
