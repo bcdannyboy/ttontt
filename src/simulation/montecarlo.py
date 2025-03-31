@@ -19,7 +19,7 @@ from functools import lru_cache
 
 # Import simulation components
 from src.simulation.utils import (
-    initialize_openbb, calculate_statistics, _format_time_horizon, 
+    initialize_openbb, calculate_statistics, 
     CPU_COUNT, DEFAULT_SIMULATION_COUNT, DEFAULT_TIME_HORIZONS, DEVICE
 )
 from src.simulation.parallel import (

@@ -27,7 +27,7 @@ async def generate_stock_report(ticker: str, config: Dict[str, Any] = None) -> D
         Dictionary with report data
     """
     try:
-        from src.simulation.utils import _format_time_horizon
+        from src.simulation.utils import format_time_horizon
         from src.simulation.montecarlo import MonteCarloSimulator
         
         # Use default config if none provided

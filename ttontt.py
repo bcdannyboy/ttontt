@@ -294,6 +294,233 @@ def _format_time_horizon(days: int) -> str:
     else:
         return f"{days}D"
 
+def generate_monte_carlo_report_task(ticker: str, score: float, details: dict) -> dict:
+    """
+    Generate a Monte Carlo simulation report for a ticker with optimized performance.
+    
+    Args:
+        ticker (str): The stock ticker symbol.
+        score (float): The technical score.
+        details (dict): Details from technical analysis.
+        
+    Returns:
+        dict: Technical report enhanced with Monte Carlo data.
+    """
+    try:
+        # Import required modules
+        from src.simulation.montecarlo import MonteCarloSimulator
+        import numpy as np
+        import asyncio
+        import traceback
+        import concurrent.futures
+        import time
+
+        # Configuration - Choose parameters that balance accuracy and performance
+        simulation_configs = {
+            # Tier 1: Quick approximation for less liquid stocks
+            "quick": {
+                "num_simulations": 500,
+                "time_horizons": [21, 63],  # Focus on 1M and 3M horizons
+                "use_heston": False,        # Use simpler GBM model
+                "use_multiple_volatility_models": True, 
+                "max_threads": 4
+            },
+            # Tier 2: Standard for most stocks
+            "standard": {
+                "num_simulations": 800,
+                "time_horizons": [21, 63, 126],  # 1M, 3M, 6M
+                "use_heston": True,
+                "use_multiple_volatility_models": True,
+                "max_threads": 6
+            },
+            # Tier 3: Comprehensive for highly liquid stocks
+            "comprehensive": {
+                "num_simulations": 1000,
+                "time_horizons": [21, 63, 126, 252],  # 1M, 3M, 6M, 1Y
+                "use_heston": True,
+                "use_multiple_volatility_models": True,
+                "max_threads": 8
+            }
+        }
+
+        # Determine simulation tier based on stock characteristics
+        # This is a simple heuristic that could be improved with more data
+        if "volume" in details.get("raw_indicators", {}) and details["raw_indicators"].get("volume", 0) > 10000000:
+            config = simulation_configs["comprehensive"]
+            logger.info(f"Using comprehensive Monte Carlo simulation for high-volume stock {ticker}")
+        elif details.get("category_scores", {}).get("volatility", 0) > 0.5:
+            config = simulation_configs["standard"]
+            logger.info(f"Using standard Monte Carlo simulation for {ticker}")
+        else:
+            config = simulation_configs["quick"]
+            logger.info(f"Using quick Monte Carlo simulation for {ticker}")
+
+        # Initialize simulator with the selected configuration
+        simulator = MonteCarloSimulator(
+            ticker=ticker,
+            num_simulations=config["num_simulations"],
+            time_horizons=config["time_horizons"],
+            use_heston=config["use_heston"],
+            use_multiple_volatility_models=config["use_multiple_volatility_models"],
+            max_threads=config["max_threads"]
+        )
+        
+        # Create a new event loop to run our async functions
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Custom function to run calibration with proper error handling
+        def run_calibration():
+            try:
+                logger.info(f"Starting calibration for {ticker}")
+                calibration_success = loop.run_until_complete(simulator.calibrate_model_parameters())
+                logger.info(f"Calibration completed for {ticker}: {calibration_success}")
+                return calibration_success
+            except Exception as e:
+                logger.error(f"Calibration failed for {ticker}: {e}")
+                logger.error(traceback.format_exc())
+                return False
+            finally:
+                pass  # Don't close the loop yet as we'll need it later
+        
+        # Run calibration
+        calibration_success = run_calibration()
+        
+        if not calibration_success:
+            logger.warning(f"Failed to calibrate model for {ticker}. Cannot run simulation.")
+            loop.close()  # Now close the loop
+            return {
+                "ticker": ticker,
+                "technical_score": float(score),
+                "category_scores": details.get("category_scores", {}),
+                "signals": details.get("signals", []),
+                "warnings": details.get("warnings", []) + ["Monte Carlo error: Failed to calibrate model"],
+                "report": details,
+                "monte_carlo_error": "Failed to calibrate model"
+            }
+        
+        # Custom function to run simulation with proper error handling
+        def run_simulation():
+            try:
+                logger.info(f"Starting Monte Carlo simulation for {ticker}")
+                simulation_start = time.time()
+                simulation_results = loop.run_until_complete(simulator.run_simulation())
+                simulation_duration = time.time() - simulation_start
+                logger.info(f"Simulation completed for {ticker} in {simulation_duration:.2f} seconds")
+                return simulation_results
+            except Exception as e:
+                logger.error(f"Simulation failed for {ticker}: {e}")
+                logger.error(traceback.format_exc())
+                return {}
+            finally:
+                loop.close()  # Close the loop when done
+        
+        # Run simulation
+        simulation_results = run_simulation()
+        
+        if not simulation_results:
+            logger.warning(f"No simulation results for {ticker}")
+            return {
+                "ticker": ticker,
+                "technical_score": float(score),
+                "category_scores": details.get("category_scores", {}),
+                "signals": details.get("signals", []),
+                "warnings": details.get("warnings", []) + ["Monte Carlo error: No simulation results"],
+                "report": details,
+                "monte_carlo_error": "No simulation results"
+            }
+        
+        # Get results summary
+        summary = simulator.get_results_summary()
+        
+        # Format report
+        mc_report = {
+            "ticker": ticker,
+            "current_price": summary["current_price"],
+            "annualized_volatility": summary["annualized_volatility"],
+            "time_horizons": [],
+            "simulation_details": {
+                "config_tier": "quick" if config == simulation_configs["quick"] else 
+                              "standard" if config == simulation_configs["standard"] else "comprehensive",
+                "num_simulations": config["num_simulations"],
+                "time_horizons": config["time_horizons"],
+                "use_heston": config["use_heston"]
+            }
+        }
+        
+        # Add volatility model information if available
+        if "volatility_models" in summary:
+            mc_report["volatility_models"] = summary["volatility_models"]
+        
+        # Add each time horizon to the report
+        for days, horizon_data in summary["horizons"].items():
+            mc_report["time_horizons"].append({
+                "days": days,
+                "label": _format_time_horizon(days),
+                "expected_price": horizon_data["expected_price"],
+                "expected_change_pct": horizon_data["expected_change_pct"],
+                "lower_bound": horizon_data["lower_bound"],
+                "upper_bound": horizon_data["upper_bound"],
+                "prob_increase": horizon_data["prob_increase"],
+                "prob_up_10pct": horizon_data["prob_up_10pct"],
+                "prob_down_10pct": horizon_data["prob_down_10pct"]
+            })
+        
+        # Get the 1-month horizon as the primary projection
+        time_horizons = mc_report.get("time_horizons", [])
+        horizon_1m = next((h for h in time_horizons if h["days"] == 21), None)
+        
+        # Enhance raw indicators with Monte Carlo data
+        raw_indicators = details.get("raw_indicators", {})
+        if horizon_1m:
+            raw_indicators["mc_expected_price"] = horizon_1m["expected_price"]
+            raw_indicators["mc_expected_change_pct"] = horizon_1m["expected_change_pct"]
+            raw_indicators["mc_lower_bound"] = horizon_1m["lower_bound"]
+            raw_indicators["mc_upper_bound"] = horizon_1m["upper_bound"]
+            raw_indicators["mc_prob_increase"] = horizon_1m["prob_increase"]
+            raw_indicators["mc_prob_up_10pct"] = horizon_1m["prob_up_10pct"]
+            raw_indicators["mc_prob_down_10pct"] = horizon_1m["prob_down_10pct"]
+        
+        # Create enhanced report
+        enhanced_report = {
+            "ticker": ticker,
+            "technical_score": float(score),
+            "category_scores": details.get("category_scores", {}),
+            "signals": details.get("signals", []),
+            "warnings": details.get("warnings", []),
+            "report": {
+                "raw_indicators": raw_indicators,
+                "category_scores": details.get("category_scores", {}),
+                "monte_carlo": {
+                    "expected_price": horizon_1m["expected_price"] if horizon_1m else None,
+                    "expected_change_pct": horizon_1m["expected_change_pct"] if horizon_1m else None,
+                    "lower_bound": horizon_1m["lower_bound"] if horizon_1m else None,
+                    "upper_bound": horizon_1m["upper_bound"] if horizon_1m else None,
+                    "prob_increase": horizon_1m["prob_increase"] if horizon_1m else None,
+                    "prob_up_10pct": horizon_1m["prob_up_10pct"] if horizon_1m else None,
+                    "prob_down_10pct": horizon_1m["prob_down_10pct"] if horizon_1m else None,
+                    "time_horizons": time_horizons,
+                    "volatility_models": mc_report.get("volatility_models"),
+                    "simulation_details": mc_report.get("simulation_details")
+                }
+            }
+        }
+        
+        return enhanced_report
+        
+    except Exception as e:
+        logger.error(f"Error generating Monte Carlo report for {ticker}: {e}")
+        logger.error(traceback.format_exc())
+        return {
+            "ticker": ticker,
+            "technical_score": float(score),
+            "category_scores": details.get("category_scores", {}),
+            "signals": details.get("signals", []),
+            "warnings": details.get("warnings", []) + [f"Monte Carlo error: {str(e)}"],
+            "report": details,
+            "monte_carlo_error": str(e)
+        }
+
 def run_comprehensive_monte_carlo_analysis(tickers, technical_results, max_workers=None):
     """
     Run a comprehensive Monte Carlo analysis for the given tickers,
@@ -305,17 +532,78 @@ def run_comprehensive_monte_carlo_analysis(tickers, technical_results, max_worke
         max_workers (int): Maximum number of worker threads
         
     Returns:
-        dict: Dictionary mapping ticker symbols to their Monte Carlo simulation results
+        list: List of Monte Carlo reports for each ticker
     """
     if max_workers is None:
-        max_workers = min(32, os.cpu_count() * 2)
+        import os
+        max_workers = min(16, os.cpu_count())  # More conservative thread count
     
     # Create a mapping for quick lookup of technical results
     tech_details = {ticker: (score, details) for ticker, score, details in technical_results}
     
+    from rich.console import Console
+    from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
+    
     rich_console = Console()
     mc_reports = []
     
+    # Group tickers by priority to process more important ones first
+    high_priority = []  # Top technical scores
+    medium_priority = [] # Middle range
+    low_priority = []   # Lower technical scores
+    
+    # Sort technical results by score (descending)
+    sorted_tech_results = sorted(technical_results, key=lambda x: x[1], reverse=True)
+    
+    # Split into priority groups - top 30%, middle 40%, bottom 30%
+    total = len(sorted_tech_results)
+    high_cutoff = int(total * 0.3)
+    low_cutoff = int(total * 0.7)
+    
+    for i, (ticker, score, _) in enumerate(sorted_tech_results):
+        if i < high_cutoff:
+            high_priority.append(ticker)
+        elif i >= low_cutoff:
+            low_priority.append(ticker)
+        else:
+            medium_priority.append(ticker)
+    
+    logger.info(f"Monte Carlo priority groups: {len(high_priority)} high, {len(medium_priority)} medium, {len(low_priority)} low")
+    
+    # Function to process a single batch of tickers
+    def process_batch(batch, priority_level, progress_task):
+        batch_reports = []
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as executor:
+            futures = {}
+            
+            # Submit Monte Carlo simulation tasks
+            for ticker in batch:
+                if ticker not in tech_details:
+                    logger.warning(f"No technical details found for {ticker}, skipping Monte Carlo simulation")
+                    progress.update(progress_task, advance=1)
+                    continue
+                    
+                score, details = tech_details[ticker]
+                future = executor.submit(generate_monte_carlo_report_task, ticker, score, details)
+                futures[future] = ticker
+            
+            # Process results as they complete
+            for future in concurrent.futures.as_completed(futures):
+                ticker = futures[future]
+                try:
+                    mc_report = future.result()
+                    if mc_report:
+                        batch_reports.append(mc_report)
+                except Exception as e:
+                    logger.error(f"Error generating Monte Carlo report for {ticker}: {e}")
+                    logger.error(traceback.format_exc())
+                
+                progress.update(progress_task, advance=1)
+        
+        return batch_reports
+    
+    # Process all tickers with progress bar
     with Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -326,42 +614,23 @@ def run_comprehensive_monte_carlo_analysis(tickers, technical_results, max_worke
     ) as progress:
         task = progress.add_task("Generating Monte Carlo simulations...", total=len(tickers))
         
-        # Process tickers in batches to prevent too many event loops
-        valid_tickers = [t for t in tickers if t in tech_details]
-        batch_size = min(10, len(valid_tickers))
+        # Process high priority tickers first with more threads
+        high_priority_workers = min(max_workers, len(high_priority))
+        logger.info(f"Processing {len(high_priority)} high priority tickers with {high_priority_workers} workers")
+        high_reports = process_batch(high_priority, "high", task)
+        mc_reports.extend(high_reports)
         
-        for i in range(0, len(valid_tickers), batch_size):
-            batch = valid_tickers[i:i+batch_size]
-            batch_reports = []
-            
-            with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as executor:
-                futures = {}
-                
-                # Submit Monte Carlo simulation tasks
-                for ticker in batch:
-                    score, details = tech_details[ticker]
-                    future = executor.submit(generate_monte_carlo_report_task, ticker, score, details)
-                    futures[future] = ticker
-                
-                # Process results as they complete
-                for future in concurrent.futures.as_completed(futures):
-                    ticker = futures[future]
-                    try:
-                        mc_report = future.result()
-                        if mc_report:
-                            batch_reports.append(mc_report)
-                    except Exception as e:
-                        logger.error(f"Error generating Monte Carlo report for {ticker}: {e}")
-                        logger.error(traceback.format_exc())
-                    
-                    progress.update(task, advance=1)
-            
-            # Add batch results to overall results
-            mc_reports.extend(batch_reports)
-            
-            # Small delay between batches
-            if i + batch_size < len(valid_tickers):
-                time.sleep(1)
+        # Process medium priority tickers
+        medium_priority_workers = min(max_workers-2, len(medium_priority))
+        logger.info(f"Processing {len(medium_priority)} medium priority tickers with {medium_priority_workers} workers")
+        medium_reports = process_batch(medium_priority, "medium", task)
+        mc_reports.extend(medium_reports)
+        
+        # Process low priority tickers if time permits
+        low_priority_workers = min(max_workers-4, len(low_priority))
+        logger.info(f"Processing {len(low_priority)} low priority tickers with {low_priority_workers} workers")
+        low_reports = process_batch(low_priority, "low", task)
+        mc_reports.extend(low_reports)
     
     return mc_reports
 
@@ -392,15 +661,21 @@ def create_enhanced_monte_carlo_visualization(technical_results, monte_carlo_res
     table.add_column("Current", justify="right", style="yellow")
     table.add_column("Tech Exp", justify="right", style="yellow")
     table.add_column("MC Exp", justify="right", style="blue")
+    table.add_column("MC Change", justify="right", style="blue")
     table.add_column("MC Range", justify="right", style="blue")
     table.add_column("Prob↑", justify="right", style="magenta")
-    table.add_column("Vol Models", justify="right", style="blue")
-    table.add_column("Best Frame", justify="right", style="blue")
+    table.add_column("Config", justify="right", style="blue")
     table.add_column("Signals", style="green")
     
-    # Populate the table
+    # Populate the table with results where available
+    processed_tickers = []
+    
+    # First add tickers that have Monte Carlo results
     for ticker, score, details in technical_results:
-        if ticker in mc_details:
+        if ticker in mc_details and ticker not in processed_tickers:
+            processed_tickers.append(ticker)
+            
+            # Get Monte Carlo data
             mc_report = mc_details[ticker]["report"]["monte_carlo"]
             raw = details.get("raw_indicators", {})
             
@@ -410,15 +685,15 @@ def create_enhanced_monte_carlo_visualization(technical_results, monte_carlo_res
             
             # Extract Monte Carlo indicators
             mc_exp = mc_report.get("expected_price", "N/A")
+            mc_change = mc_report.get("expected_change_pct", "N/A")
             mc_low = mc_report.get("lower_bound", "N/A")
             mc_high = mc_report.get("upper_bound", "N/A")
             mc_range = f"{mc_low:.2f}-{mc_high:.2f}" if isinstance(mc_low, (int, float)) and isinstance(mc_high, (int, float)) else "N/A"
             mc_prob = mc_report.get("prob_increase", "N/A")
             
-            # Get volatility model information
-            vol_models = mc_report.get("volatility_models", {})
-            num_models = vol_models.get("num_models", "N/A")
-            best_frame = vol_models.get("best_timeframe", "N/A")
+            # Get simulation config info
+            sim_details = mc_report.get("simulation_details", {})
+            config_tier = sim_details.get("config_tier", "N/A")
             
             # Get signals
             signals = ", ".join(mc_details[ticker].get("signals", [])[:2])
@@ -430,208 +705,52 @@ def create_enhanced_monte_carlo_visualization(technical_results, monte_carlo_res
                 f"{current:.2f}" if isinstance(current, (int, float)) else str(current),
                 f"{tech_exp:.2f}" if isinstance(tech_exp, (int, float)) else str(tech_exp),
                 f"{mc_exp:.2f}" if isinstance(mc_exp, (int, float)) else str(mc_exp),
+                f"{mc_change:.1f}%" if isinstance(mc_change, (int, float)) else str(mc_change),
                 mc_range,
                 f"{mc_prob:.1f}%" if isinstance(mc_prob, (int, float)) else str(mc_prob),
-                str(num_models),
-                str(best_frame),
+                config_tier,
                 signals
+            )
+    
+    # Then add tickers without Monte Carlo results
+    for ticker, score, details in technical_results:
+        if ticker not in processed_tickers:
+            raw = details.get("raw_indicators", {})
+            current = raw.get("current_price", "N/A")
+            tech_exp = raw.get("expected_price", "N/A")
+            
+            # Add row with N/A for Monte Carlo fields
+            table.add_row(
+                ticker,
+                f"{score:.4f}",
+                f"{current:.2f}" if isinstance(current, (int, float)) else str(current),
+                f"{tech_exp:.2f}" if isinstance(tech_exp, (int, float)) else str(tech_exp),
+                "N/A",
+                "N/A",
+                "N/A",
+                "N/A",
+                "Not run",
+                ", ".join(details.get("signals", [])[:2])
             )
     
     return table
 
-def generate_monte_carlo_report_task(ticker: str, score: float, details: dict) -> dict:
-    """
-    Generate a Monte Carlo simulation report for a ticker.
-    
-    Args:
-        ticker (str): The stock ticker symbol.
-        score (float): The technical score.
-        details (dict): Details from technical analysis.
-        
-    Returns:
-        dict: Technical report enhanced with Monte Carlo data.
-    """
-    try:
-        # Import the Monte Carlo simulator class
-        from src.simulation.montecarlo import MonteCarloSimulator
-        import numpy as np
-        import asyncio
-        import traceback
 
-        # Initialize simulator with multiple volatility models
-        simulator = MonteCarloSimulator(
-            ticker=ticker,
-            num_simulations=1000,
-            time_horizons=[1, 5, 10, 21, 63, 126, 252],  # 1D, 1W, 2W, 1M, 3M, 6M, 1Y
-            use_heston=True,
-            use_multiple_volatility_models=True  # Use all volatility models
-        )
-        
-        # Run calibration
-        calibration_success = False
-        try:
-            # Calibrate the model parameters in a safely isolated manner
-            async def run_calibration():
-                return await simulator.calibrate_model_parameters()
-            
-            calibration_success = run_async_in_new_loop(run_calibration())
-            
-            if not calibration_success:
-                logger.warning(f"Failed to calibrate model for {ticker}. Cannot run simulation.")
-                return {
-                    "ticker": ticker,
-                    "technical_score": float(score),
-                    "category_scores": details.get("category_scores", {}),
-                    "signals": details.get("signals", []),
-                    "warnings": details.get("warnings", []) + ["Monte Carlo error: Failed to calibrate model"],
-                    "report": details,
-                    "monte_carlo_error": "Failed to calibrate model"
-                }
-            
-        except Exception as e:
-            logger.error(f"Error calibrating model for {ticker}: {e}")
-            logger.error(traceback.format_exc())
-            return {
-                "ticker": ticker,
-                "technical_score": float(score),
-                "category_scores": details.get("category_scores", {}),
-                "signals": details.get("signals", []),
-                "warnings": details.get("warnings", []) + [f"Monte Carlo error: {str(e)}"],
-                "report": details,
-                "monte_carlo_error": f"Failed to calibrate model: {str(e)}"
-            }
-        
-        # Run simulation
-        try:
-            # Run the simulation in a safely isolated manner
-            async def run_simulation():
-                return await simulator.run_simulation()
-            
-            simulation_results = run_async_in_new_loop(run_simulation())
-            
-            if not simulation_results:
-                logger.warning(f"No simulation results for {ticker}")
-                return {
-                    "ticker": ticker,
-                    "technical_score": float(score),
-                    "category_scores": details.get("category_scores", {}),
-                    "signals": details.get("signals", []),
-                    "warnings": details.get("warnings", []) + ["Monte Carlo error: No simulation results"],
-                    "report": details,
-                    "monte_carlo_error": "No simulation results"
-                }
-                
-            # Get results summary
-            summary = simulator.get_results_summary()
-            
-            # Format report
-            mc_report = {
-                "ticker": ticker,
-                "current_price": summary["current_price"],
-                "annualized_volatility": summary["annualized_volatility"],
-                "time_horizons": [],
-                "raw_simulations": simulation_results
-            }
-            
-            # Add volatility model information if available
-            if "volatility_models" in summary:
-                mc_report["volatility_models"] = summary["volatility_models"]
-            
-            # Add each time horizon to the report
-            for days, horizon_data in summary["horizons"].items():
-                mc_report["time_horizons"].append({
-                    "days": days,
-                    "label": _format_time_horizon(days),
-                    "expected_price": horizon_data["expected_price"],
-                    "expected_change_pct": horizon_data["expected_change_pct"],
-                    "lower_bound": horizon_data["lower_bound"],
-                    "upper_bound": horizon_data["upper_bound"],
-                    "prob_increase": horizon_data["prob_increase"],
-                    "prob_up_10pct": horizon_data["prob_up_10pct"],
-                    "prob_down_10pct": horizon_data["prob_down_10pct"]
-                })
-            
-            # Get the 1-month horizon as the primary projection
-            time_horizons = mc_report.get("time_horizons", [])
-            horizon_1m = next((h for h in time_horizons if h["days"] == 21), None)
-            
-            # Enhance raw indicators with Monte Carlo data
-            raw_indicators = details.get("raw_indicators", {})
-            if horizon_1m:
-                raw_indicators["mc_expected_price"] = horizon_1m["expected_price"]
-                raw_indicators["mc_expected_change_pct"] = horizon_1m["expected_change_pct"]
-                raw_indicators["mc_lower_bound"] = horizon_1m["lower_bound"]
-                raw_indicators["mc_upper_bound"] = horizon_1m["upper_bound"]
-                raw_indicators["mc_prob_increase"] = horizon_1m["prob_increase"]
-                raw_indicators["mc_prob_up_10pct"] = horizon_1m["prob_up_10pct"]
-                raw_indicators["mc_prob_down_10pct"] = horizon_1m["prob_down_10pct"]
-            
-            # Create enhanced report
-            enhanced_report = {
-                "ticker": ticker,
-                "technical_score": float(score),
-                "category_scores": details.get("category_scores", {}),
-                "signals": details.get("signals", []),
-                "warnings": details.get("warnings", []),
-                "report": {
-                    "raw_indicators": raw_indicators,
-                    "category_scores": details.get("category_scores", {}),
-                    "monte_carlo": {
-                        "expected_price": horizon_1m["expected_price"] if horizon_1m else None,
-                        "expected_change_pct": horizon_1m["expected_change_pct"] if horizon_1m else None,
-                        "lower_bound": horizon_1m["lower_bound"] if horizon_1m else None,
-                        "upper_bound": horizon_1m["upper_bound"] if horizon_1m else None,
-                        "prob_increase": horizon_1m["prob_increase"] if horizon_1m else None,
-                        "prob_up_10pct": horizon_1m["prob_up_10pct"] if horizon_1m else None,
-                        "prob_down_10pct": horizon_1m["prob_down_10pct"] if horizon_1m else None,
-                        "time_horizons": time_horizons,
-                        "volatility_models": mc_report.get("volatility_models")
-                    }
-                }
-            }
-            
-            return enhanced_report
-            
-        except Exception as e:
-            logger.error(f"Error generating Monte Carlo simulation for {ticker}: {e}")
-            logger.error(traceback.format_exc())
-            return {
-                "ticker": ticker,
-                "technical_score": float(score),
-                "category_scores": details.get("category_scores", {}),
-                "signals": details.get("signals", []),
-                "warnings": details.get("warnings", []) + [f"Monte Carlo error: {str(e)}"],
-                "report": details,
-                "monte_carlo_error": str(e)
-            }
-    except Exception as e:
-        logger.error(f"Error generating Monte Carlo report for {ticker}: {e}")
-        logger.error(traceback.format_exc())
-        return {
-            "ticker": ticker,
-            "technical_score": float(score),
-            "category_scores": details.get("category_scores", {}),
-            "signals": details.get("signals", []),
-            "warnings": details.get("warnings", []) + [f"Monte Carlo error: {str(e)}"],
-            "report": details,
-            "monte_carlo_error": str(e)
-        }
-
-def run_async_in_new_loop(coro, timeout=60):
-    """Safely run an async coroutine in a new event loop with proper cleanup and timeout.
-    
-    Args:
-        coro: The coroutine to run
-        timeout: Timeout in seconds (default 60 seconds)
-        
-    Returns:
-        The result of the coroutine, or None if timed out or error
+def run_async_in_new_loop(coro, timeout=300):
     """
-    import asyncio
+    Safely run an async coroutine in a new event loop with proper cleanup and timeout.
+
+    Args:
+        coro: The coroutine to run.
+        timeout: Timeout in seconds (default 300 seconds).
+
+    Returns:
+        The result of the coroutine, or None if timed out or error.
+    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        # Add timeout to the coroutine
+        # Wait for the coroutine to complete with the given timeout.
         return loop.run_until_complete(asyncio.wait_for(coro, timeout=timeout))
     except asyncio.TimeoutError:
         logger.error(f"Operation timed out after {timeout}s")
@@ -642,7 +761,7 @@ def run_async_in_new_loop(coro, timeout=60):
         return None
     finally:
         try:
-            # Cleanup any remaining tasks
+            # Cleanup any pending tasks
             pending = asyncio.all_tasks(loop)
             if pending:
                 loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
@@ -730,8 +849,7 @@ def perform_stock_screening(tickers, batch_size=10):
         
         # Run peer analysis safely
         try:
-            from src.screener.fundamentals.fundamentals_peers import gather_peer_analysis
-            
+                        
             async def run_peer_analysis():
                 return await gather_peer_analysis(tickers_to_analyze)
             

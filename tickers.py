@@ -1,7 +1,38 @@
-tickers = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'AVGO', 'TSLA', 'LLY', 'TSM']
+# tickers = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'AVGO', 'TSLA', 'LLY', 'TSM']
 # tickers = ['AAPL', 'MSFT', 'NVDA', 'AMZN']
 # tickers = [ 'BX', 'KKR', 'APO', 'CG', 'TPG', 'ARES', 'EQT', 'PGHN.SW', 'BAM', 'ARCC', 'OBDC', 'BXSL', 'FSK', 'MAIN', 'GBDC', 'HTGC', 'TSLX', 'PSEC', 'GSBD', 'OCSL', 'MFIC', 'NMFC', 'KBDC', 'CSWC', 'BBDC', 'TRIN', 'PFLT', 'SLR', 'CGBDC', 'MSIF', 'FDUS', 'CCAP', 'TCPC', 'GLAD', 'CION', 'GAIN', 'PNNT', 'RWAY', 'SCM', 'HRZN', 'TPVG', 'WHF', 'OXSQ', 'MRCC', 'PTMN', 'SSSS', 'OFS', 'GECC', 'PFX', 'LRFC', 'RAND', 'ICMB', 'EQS', 'NVDA', 'MSFT', 'ARM', 'AMD' ];
 # tickers = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'LLY', 'TSM', 'WMT', 'JPM', 'V', 'MA', 'UNH', 'ORCL', 'NFLX', 'COST', 'JNJ', 'PG', 'ABBV', 'HD']
+tickers = [
+   # Technology
+   "NVDA", "MSFT", "ADBE", "ASML", "TSM",
+   
+   # Energy Transition and Infrastructure
+   "NEE", "ENPH", "PCG", "BLK", "EQIX",
+   
+   # Healthcare
+   "UNH", "LLY", "ISRG", "VEEV", "DHR",
+   
+   # Financial Services
+   "JPM", "MA", "COIN", "BAC", "SCHW",
+   
+   # Manufacturing & Industrial
+   "CAT", "DE", "HON", "EMR", "GE",
+   
+   # Consumer & Retail
+   "AMZN", "COST", "WMT", "HD", "TGT",
+   
+   # Materials & Commodities
+   "FCX", "NUE", "APD", "ALB", "BHP",
+   
+   # Real Estate
+   "AMT", "PLD", "DLR", "CBRE", "PSA",
+   
+   # Defense & Aerospace
+   "LMT", "RTX", "NOC", "PLTR", "LDOS",
+   
+   # Transportation & Logistics
+   "UPS", "CSX", "JBHT", "UAL", "ODFL"
+]
 from openbb import obb
 
 def get_active_tickers():

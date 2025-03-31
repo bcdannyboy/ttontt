@@ -231,29 +231,23 @@ def optimal_chunk_size(total_size: int, num_workers: int) -> int:
     
     return base_chunk_size
 
-def batch_items(items: List[Any], batch_size: int) -> List[List[Any]]:
-    """
-    Split items into batches of specified size.
-    
-    Args:
-        items: List of items to batch
-        batch_size: Size of each batch
-        
-    Returns:
-        List of batches
-    """
-    return [items[i:i+batch_size] for i in range(0, len(items), batch_size)]
-
-@lru_cache(maxsize=32)
-def _format_time_horizon(days: int) -> str:
+def format_time_horizon(days: int) -> str:
     """
     Format a time horizon in days to a human-readable string.
-    
+
     Args:
-        days: Number of days
-        
+        days (int): Number of days.
+
     Returns:
-        Formatted string (e.g., "1D", "1W", "1M", etc.)
+        str: A formatted string representing the time horizon, for example:
+             "1D" for 1 day,
+             "1W" for up to 5 days,
+             "2W" for up to 10 days,
+             "1M" for up to 21 days,
+             "3M" for up to 63 days,
+             "6M" for up to 126 days,
+             "1Y" for up to 252 days,
+             or simply the number of days with "D" suffix otherwise.
     """
     if days == 1:
         return "1D"
@@ -271,3 +265,16 @@ def _format_time_horizon(days: int) -> str:
         return "1Y"
     else:
         return f"{days}D"
+
+def batch_items(items: List[Any], batch_size: int) -> List[List[Any]]:
+    """
+    Split items into batches of specified size.
+    
+    Args:
+        items: List of items to batch
+        batch_size: Size of each batch
+        
+    Returns:
+        List of batches
+    """
+    return [items[i:i+batch_size] for i in range(0, len(items), batch_size)]
